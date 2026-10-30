@@ -5,4 +5,4 @@ Every step from the reference to your final version, each with the live-board ru
 | Step | Change | Run ID | T (s) | M (MB) | Points |
 |---|---|---|---|---|---|
 | 0 | The reference, unchanged | | 32.05 | 228 | 0 |
-| 1 | mmap chunking + byte-slice parsing + multiprocessing (6 workers) | | | | |
+| 1 | mmap chunking + byte-slice parsing + multiprocessing (6 workers) | run-46d505d0edc9 | 1.78 | 255 | 29.303 |
