@@ -7,4 +7,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 0 | The reference, unchanged | | 56.35 | 2290 | 0 |
 | 1 | Selective query term indexing + parallel mmap corpus parsing | 9e19e61 | 45.3 | 3422 | 0 |
 | 2 | Zero-RAM text retention (array offset indexing directly on mmap) | 76d70da | 57.9 | 2319 | 0 |
-| 3 | Multiprocess parallel query evaluation across 4 worker cores | | | | |
+| 3 | Multiprocess parallel query evaluation across 4 worker cores with ordered reassembly | | | | |

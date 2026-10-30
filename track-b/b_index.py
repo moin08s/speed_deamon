@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Speed Demon 2026: Track B (Index) Fast Multi-Worker Query Answering."""
+"""Speed Demon 2026: Track B (Index) Fast Multi-Worker Query Answering with Strict Output Ordering."""
 import array
 import mmap
 import multiprocessing as mp
@@ -56,7 +56,7 @@ def format_result(doc_ids):
         parts.append(str(ids[i]))
     return " ".join(parts)
 
-def query_worker(docs_path, offsets, frozen_index, query_chunk, q):
+def query_worker(chunk_idx, docs_path, offsets, frozen_index, query_chunk, q):
     results = []
     with open(docs_path, "rb") as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
@@ -69,7 +69,7 @@ def query_worker(docs_path, offsets, frozen_index, query_chunk, q):
                     terms = tokenize(rest)
                     res = run_phrase(frozen_index, mm, offsets, terms)
                     results.append(format_result(res) + "\n")
-    q.put(results)
+    q.put((chunk_idx, results))
 
 def main(data_dir, out_dir):
     docs_path = os.path.join(data_dir, DOCS_FILE)
@@ -118,7 +118,6 @@ def main(data_dir, out_dir):
     frozen_index = {t: frozenset(ids) for t, ids in index.items() if ids}
     del index
 
-    # Distribute queries across 4 worker processes to slash query wall time
     num_workers = 4
     total_q = len(raw_queries)
     chunk_size = (total_q + num_workers - 1) // num_workers
@@ -126,22 +125,23 @@ def main(data_dir, out_dir):
 
     q = mp.Queue()
     procs = []
-    for c in chunks:
-        p = mp.Process(target=query_worker, args=(docs_path, offsets, frozen_index, c, q))
+    for i, c in enumerate(chunks):
+        p = mp.Process(target=query_worker, args=(i, docs_path, offsets, frozen_index, c, q))
         p.start()
         procs.append(p)
 
-    results_chunks = []
+    results_dict = {}
     for _ in chunks:
-        results_chunks.append(q.get())
+        idx, res = q.get()
+        results_dict[idx] = res
 
     for p in procs:
         p.join()
 
-    # Flatten ordered results
+    # Reassemble strictly in input order
     flattened = []
-    for r in results_chunks:
-        flattened.extend(r)
+    for i in range(len(chunks)):
+        flattened.extend(results_dict[i])
 
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, RESULTS_FILE)
