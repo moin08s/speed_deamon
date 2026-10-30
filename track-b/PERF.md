@@ -4,5 +4,5 @@ Every step from the reference to your final version, each with the live-board ru
 
 | Step | Change | Run ID | T (s) | M (MB) | Points |
 |---|---|---|---|---|---|
-| 0 | The reference, unchanged | | 56.35 | 2,200 | 0 |
-| 1 | | | | | |
+| 0 | The reference, unchanged | | 56.35 | 2290 | 0 |
+| 1 | Selective query term indexing + parallel mmap corpus parsing | | | | |

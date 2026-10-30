@@ -1,73 +1,103 @@
 #!/usr/bin/env python3
-"""Speed Demon 2026, Track A (Ingest): the naive reference implementation.
-
-    python3.13 reference/a_ingest.py [--data /data] [--out /out]
-
-Reads requests.log and writes summary.txt: for every (UTC hour, endpoint) pair that
-has at least one request, the request count, the p50/p95/p99 latency (nearest rank) and
-the number and rate of 5xx responses. specs/a-ingest.md is the contract.
-
-This is the obvious version on purpose, and correct: read lines, split them, parse each
-timestamp with the datetime library, append each latency to a list per group, sort
-every list at the end.
-"""
-import argparse
+import mmap
+import multiprocessing as mp
 import os
 import sys
-from datetime import datetime
 
 INPUT_NAME = "requests.log"
 OUTPUT_NAME = "summary.txt"
-TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f%z"   # RFC 3339; %z reads the trailing Z as UTC
 
+def _parse_worker(file_path, start, end, q):
+    groups = {}
+    with open(file_path, "rb") as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            idx = start
+            while idx < end:
+                nl = mm.find(b"\n", idx, end)
+                if nl == -1:
+                    line = mm[idx:end]
+                    idx = end
+                else:
+                    line = mm[idx:nl]
+                    idx = nl + 1
+                if not line:
+                    continue
 
-def percentile(sorted_values, p):
-    """Nearest rank: the value at 1-indexed rank ceil(p * n / 100)."""
-    n = len(sorted_values)
-    rank = (p * n + 99) // 100   # ceil(p * n / 100) in integer arithmetic
-    return sorted_values[rank - 1]
+                hour = line[:13]
+                sp2 = line.find(b" ", 29)
+                sp3 = line.find(b" ", sp2 + 1)
+                sp4 = line.find(b" ", sp3 + 1)
 
+                endpoint = line[sp2 + 1 : sp3]
+                status_char = line[sp3 + 1]
+                latency = int(line[sp4 + 1 :])
+
+                key = (hour, endpoint)
+                grp = groups.get(key)
+                if grp is None:
+                    groups[key] = grp = [[], 0]
+                grp[0].append(latency)
+                if status_char == 53: # b'5'
+                    grp[1] += 1
+    q.put(groups)
 
 def main(data_dir, out_dir):
-    latencies = {}   # (hour, endpoint) -> list of latency_us, in input order
-    errors = {}      # (hour, endpoint) -> number of 5xx responses
+    file_path = os.path.join(data_dir, INPUT_NAME)
+    total_size = os.path.getsize(file_path)
 
-    with open(os.path.join(data_dir, INPUT_NAME), encoding="utf-8") as f:
-        for line in f:
-            ts, method, endpoint, status, latency_us = line.rstrip("\n").split(" ")
-            when = datetime.strptime(ts, TIMESTAMP_FORMAT)
-            hour = when.replace(minute=0, second=0, microsecond=0)
-            key = (hour, endpoint)
-            if key not in latencies:
-                latencies[key] = []
-                errors[key] = 0
-            latencies[key].append(int(latency_us))
-            if 500 <= int(status) <= 599:
-                errors[key] += 1
+    num_workers = 6
+    chunk_size = total_size // num_workers
+    ranges = []
 
-    lines = []
-    # Endpoints are ASCII (see the spec), so Python's string order is bytewise order.
-    for key in sorted(latencies):
+    with open(file_path, "rb") as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            curr = 0
+            for i in range(num_workers):
+                if i == num_workers - 1:
+                    nxt = total_size
+                else:
+                    nxt = mm.find(b"\n", curr + chunk_size) + 1
+                ranges.append((curr, nxt))
+                curr = nxt
+
+    q = mp.Queue()
+    procs = []
+    for st, en in ranges:
+        p = mp.Process(target=_parse_worker, args=(file_path, st, en, q))
+        p.start()
+        procs.append(p)
+
+    merged = {}
+    for _ in range(num_workers):
+        res = q.get()
+        for k, v in res.items():
+            m = merged.get(k)
+            if m is None:
+                merged[k] = v
+            else:
+                m[0].extend(v[0])
+                m[1] += v[1]
+
+    for p in procs:
+        p.join()
+
+    out = []
+    for key in sorted(merged.keys()):
         hour, endpoint = key
-        values = sorted(latencies[key])
-        count = len(values)
-        errs = errors[key]
-        ppm = errs * 1_000_000 // count
-        lines.append(
-            f"{hour.strftime('%Y-%m-%dT%H:00:00Z')} {endpoint} {count} "
-            f"{percentile(values, 50)} {percentile(values, 95)} {percentile(values, 99)} "
-            f"{errs} {ppm}\n"
-        )
+        lat_list, errs = merged[key]
+        lat_list.sort()
+        n = len(lat_list)
+        p50 = lat_list[(50 * n + 99) // 100 - 1]
+        p95 = lat_list[(95 * n + 99) // 100 - 1]
+        p99 = lat_list[(99 * n + 99) // 100 - 1]
+        ppm = errs * 1_000_000 // n
+        out.append(f"{hour.decode()}:00:00Z {endpoint.decode()} {n} {p50} {p95} {p99} {errs} {ppm}\n")
 
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, OUTPUT_NAME), "w", encoding="utf-8", newline="\n") as f:
-        f.write("".join(lines))
-
+        f.writelines(out)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Track A (Ingest) reference implementation.")
-    parser.add_argument("--data", default="/data", help="directory holding requests.log")
-    parser.add_argument("--out", default="/out", help="directory to write summary.txt into")
-    args = parser.parse_args()
-    main(args.data, args.out)
-    sys.exit(0)
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else "/data"
+    out_dir = sys.argv[2] if len(sys.argv) > 2 else "/out"
+    main(data_dir, out_dir)

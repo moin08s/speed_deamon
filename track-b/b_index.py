@@ -1,20 +1,6 @@
 #!/usr/bin/env python3.13
-"""Naive reference for Speed Demon 2026, Track B (Index).
-
-    python3.13 reference/b_index.py [--data /data] [--out /out]
-
-Reads docs.txt and queries.txt from the data directory and writes results.txt
-to the output directory. The rules are in specs/b-index.md.
-
-This is the obvious implementation, kept slow on purpose: a Python dict from
-every term to the set of documents containing it, boolean operators applied
-left to right with Python set operations, and phrases checked by
-re-tokenizing every candidate document. It is single-threaded and keeps no
-positions. Its output is the correctness gate, so it is exact, not fast.
-"""
-from __future__ import annotations
-
-import argparse
+import mmap
+import multiprocessing as mp
 import os
 import re
 import sys
@@ -23,104 +9,149 @@ DOCS_FILE = "docs.txt"
 QUERIES_FILE = "queries.txt"
 RESULTS_FILE = "results.txt"
 
-# A token is a maximal run of ASCII [a-z0-9] after ASCII-lowercasing the bytes.
-# bytes.lower() only touches A-Z, so every byte >= 0x80 stays a separator.
 TOKEN_RE = re.compile(rb"[a-z0-9]+")
-EMPTY: frozenset[int] = frozenset()
+EMPTY = frozenset()
 
-
-def tokenize(text: bytes) -> list[bytes]:
+def tokenize(text: bytes):
     return TOKEN_RE.findall(text.lower())
 
-
-def load_corpus(path: str) -> tuple[list[bytes], dict[bytes, set[int]]]:
-    """Read docs.txt. Return the raw texts and the term -> doc id set index."""
-    texts: list[bytes] = []
-    index: dict[bytes, set[int]] = {}
-    with open(path, "rb") as f:
-        for line in f:
-            if line.endswith(b"\n"):
-                line = line[:-1]
-            id_field, _, text = line.partition(b"\t")
-            doc_id = int(id_field)
-            if doc_id != len(texts):
-                raise ValueError(f"document ids must be 0..N-1 in order, got {doc_id}")
-            texts.append(text)
-            for term in set(tokenize(text)):
-                postings = index.get(term)
-                if postings is None:
-                    index[term] = {doc_id}
-                else:
-                    postings.add(doc_id)
-    return texts, index
-
-
-def run_bool(index: dict[bytes, set[int]], words: list[bytes]):
-    """words is t1 OP t2 OP t3 ...; apply each operator to the running result."""
-    result = index.get(words[0], EMPTY)
+def run_bool(index, words):
+    res = index.get(words[0], EMPTY)
     for op, term in zip(words[1::2], words[2::2]):
-        postings = index.get(term, EMPTY)
+        post = index.get(term, EMPTY)
         if op == b"AND":
-            result = result & postings
+            res = res & post
         elif op == b"OR":
-            result = result | postings
+            res = res | post
         elif op == b"NOT":
-            result = result - postings
-        else:
-            raise ValueError(f"unknown operator {op!r}")
-    return result
+            res = res - post
+    return res
 
+def run_phrase(index, texts, terms):
+    cands = index.get(terms[0], EMPTY)
+    for t in terms[1:]:
+        cands = cands & index.get(t, EMPTY)
+        if not cands:
+            return []
 
-def run_phrase(index: dict[bytes, set[int]], texts: list[bytes], terms: list[bytes]) -> list[int]:
-    """Documents containing every term, then an exact scan of each one."""
-    candidates = index.get(terms[0], EMPTY)
-    for term in terms[1:]:
-        candidates = candidates & index.get(term, EMPTY)
     k = len(terms)
     matches = []
-    for doc_id in candidates:
-        tokens = tokenize(texts[doc_id])
-        for i in range(len(tokens) - k + 1):
-            if tokens[i:i + k] == terms:
+    for doc_id in cands:
+        toks = tokenize(texts[doc_id])
+        for i in range(len(toks) - k + 1):
+            if toks[i : i + k] == terms:
                 matches.append(doc_id)
                 break
     return matches
 
-
-def format_result(doc_ids) -> str:
-    """count, sum of ids, then the (up to) 10 smallest ids ascending."""
+def format_result(doc_ids):
     ids = sorted(doc_ids)
-    return " ".join(str(x) for x in [len(ids), sum(ids)] + ids[:10])
+    m = min(10, len(ids))
+    parts = [str(len(ids)), str(sum(ids))]
+    for i in range(m):
+        parts.append(str(ids[i]))
+    return " ".join(parts)
 
+def parse_worker(file_path, start, end, needed_terms, q):
+    local_index = {t: [] for t in needed_terms}
+    local_texts = []
+    with open(file_path, "rb") as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            idx = start
+            while idx < end:
+                nl = mm.find(b"\n", idx, end)
+                if nl == -1:
+                    line = mm[idx:end]
+                    idx = end
+                else:
+                    line = mm[idx:nl]
+                    idx = nl + 1
+                if not line:
+                    continue
+                id_bytes, _, text = line.partition(b"\t")
+                doc_id = int(id_bytes)
+                local_texts.append((doc_id, text))
+                toks = set(TOKEN_RE.findall(text.lower()))
+                for t in toks.intersection(needed_terms):
+                    local_index[t].append(doc_id)
+    q.put((local_index, local_texts))
 
-def answer(index, texts, line: bytes) -> str:
-    kind, _, rest = line.partition(b" ")
-    if kind == b"BOOL":
-        return format_result(run_bool(index, rest.split(b" ")))
-    if kind == b"PHRASE":
-        if not (rest.startswith(b'"') and rest.endswith(b'"')):
-            raise ValueError(f"bad phrase query {line!r}")
-        return format_result(run_phrase(index, texts, rest[1:-1].split(b" ")))
-    raise ValueError(f"bad query {line!r}")
+def main(data_dir, out_dir):
+    docs_path = os.path.join(data_dir, DOCS_FILE)
+    queries_path = os.path.join(data_dir, QUERIES_FILE)
 
-
-def main(data_dir: str, out_dir: str) -> None:
-    texts, index = load_corpus(os.path.join(data_dir, DOCS_FILE))
-    results = []
-    with open(os.path.join(data_dir, QUERIES_FILE), "rb") as f:
+    raw_queries = []
+    needed_terms = set()
+    with open(queries_path, "rb") as f:
         for line in f:
-            if line.endswith(b"\n"):
-                line = line[:-1]
-            results.append(answer(index, texts, line))
-    os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, RESULTS_FILE), "w", encoding="ascii", newline="\n") as f:
-        f.write("".join(r + "\n" for r in results))
+            line = line.rstrip(b"\r\n")
+            if not line:
+                continue
+            raw_queries.append(line)
+            kind, _, rest = line.partition(b" ")
+            if kind == b"BOOL":
+                parts = rest.split(b" ")
+                for t in parts[0::2]:
+                    needed_terms.add(t)
+            elif kind == b"PHRASE":
+                for t in tokenize(rest):
+                    needed_terms.add(t)
 
+    num_workers = 6
+    total_size = os.path.getsize(docs_path)
+    chunk_size = total_size // num_workers
+    ranges = []
+    with open(docs_path, "rb") as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            curr = 0
+            for i in range(num_workers):
+                if i == num_workers - 1:
+                    nxt = total_size
+                else:
+                    nxt = mm.find(b"\n", curr + chunk_size) + 1
+                ranges.append((curr, nxt))
+                curr = nxt
+
+    q = mp.Queue()
+    procs = []
+    for st, en in ranges:
+        p = mp.Process(target=parse_worker, args=(docs_path, st, en, needed_terms, q))
+        p.start()
+        procs.append(p)
+
+    index = {t: set() for t in needed_terms}
+    doc_tuples = []
+    for _ in range(num_workers):
+        sub_index, sub_texts = q.get()
+        doc_tuples.extend(sub_texts)
+        for t, ids in sub_index.items():
+            if ids:
+                index[t].update(ids)
+
+    for p in procs:
+        p.join()
+
+    frozen_index = {t: frozenset(ids) for t, ids in index.items() if ids}
+    doc_tuples.sort(key=lambda x: x[0])
+    texts = [t[1] for t in doc_tuples]
+
+    results = []
+    for line in raw_queries:
+        kind, _, rest = line.partition(b" ")
+        if kind == b"BOOL":
+            res = run_bool(frozen_index, rest.split(b" "))
+            results.append(format_result(res) + "\n")
+        elif kind == b"PHRASE":
+            terms = tokenize(rest)
+            res = run_phrase(frozen_index, texts, terms)
+            results.append(format_result(res) + "\n")
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_file = os.path.join(out_dir, RESULTS_FILE)
+    with open(out_file, "w", encoding="utf-8", newline="\n") as f:
+        f.writelines(results)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Track B (Index) naive reference.")
-    parser.add_argument("--data", default="/data")
-    parser.add_argument("--out", default="/out")
-    args = parser.parse_args()
-    main(args.data, args.out)
-    sys.exit(0)
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else "/data"
+    out_dir = sys.argv[2] if len(sys.argv) > 2 else "/out"
+    main(data_dir, out_dir)

@@ -4,5 +4,5 @@ Every step from the reference to your final version, each with the live-board ru
 
 | Step | Change | Run ID | T (s) | M (MB) | Points |
 |---|---|---|---|---|---|
-| 0 | The reference, unchanged | | 72.69 | 893 | 0 |
-| 1 | | | | | |
+| 0 | The reference, unchanged | | 72.69 | 915 | 0 |
+| 1 | Dual adjacency representation + Bidirectional Dijkstra with early cutoff | | | | |
