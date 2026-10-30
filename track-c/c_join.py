@@ -1,4 +1,5 @@
 #!/usr/bin/env python3.13
+"""Optimized Track C (Join): fast buffered I/O, integer cents parsing, direct ASCII string length."""
 import csv
 import os
 import sys
@@ -25,13 +26,16 @@ def main(data_dir, out_dir):
 
     # 1. Load regions lookup
     regions = {}
-    with open(regions_path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.reader(f)
-        next(reader)
-        for r_id, country in reader:
+    with open(regions_path, "r", encoding="ascii", newline="") as f:
+        f.readline()
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            r_id, country = line.split(",")
             regions[int(r_id)] = country
 
-    # 2. Stream records.csv and aggregate
+    # 2. Stream records.csv with large buffer and aggregate
     counts = {}
     def get_entry(k):
         e = counts.get(k)
@@ -39,7 +43,8 @@ def main(data_dir, out_dir):
             counts[k] = e = [0, 0, 0, None, None, set(), 0, 0]
         return e
 
-    with open(records_path, "r", encoding="utf-8", newline="") as f:
+    # 2MB I/O buffer to minimize read syscalls on 204 MB file
+    with open(records_path, "r", encoding="utf-8", newline="", buffering=2 * 1024 * 1024) as f:
         reader = csv.reader(f)
         header = next(reader)
         for row in reader:
@@ -64,6 +69,7 @@ def main(data_dir, out_dir):
             if entry[4] is None or cents > entry[4]:
                 entry[4] = cents
             entry[5].add(name)
+            # Spec guarantee: non-BOM bytes are ASCII + LF, so len(str) == byte length
             entry[6] += len(name)
             entry[7] += len(note)
 

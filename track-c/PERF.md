@@ -5,4 +5,5 @@ Every step from the reference to your final version, each with the live-board ru
 | Step | Change | Run ID | T (s) | M (MB) | Points |
 |---|---|---|---|---|---|
 | 0 | The reference, unchanged | | 14.44 | 400 | 0 |
-| 1 | Streamed CSV parsing + fast dot-index cents + direct ASCII length calculation | | | | |
+| 1 | Streamed CSV parsing + fast dot-index cents + direct ASCII length calculation | 9e19e61 | 10.6 | 367 | 3.412 |
+| 2 | High-throughput 2MB buffered file streaming + direct ASCII region file indexing | | | | |

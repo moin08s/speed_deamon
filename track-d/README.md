@@ -4,11 +4,12 @@ The task, the input files and the exact output format are in the [spec](https://
 
 ## Approach
 
-1. **Dual Adjacency Graph Representation**: Builds forward and backward adjacency structures directly during line-by-line ASCII ingestion.
-2. **Bidirectional Dijkstra Search**: Simultaneously expands Dijkstra searches from the source node ($s$) and target node ($t$), alternating the smaller heap.
-3. **Rigorous Early Termination**: Halts immediately when $\min(\text{heap}_f) + \min(\text{heap}_b) \ge \text{best\_distance}$, cutting search space exponentially compared to standard unidirectional search on road networks.
-4. **Boundary & Edge-Case Safety**: Handles disconnected components (returning `-1`), self-loops, parallel edges, weight 0 edges, and values $> 2^{32}-1$.
-5. **Zero Third-Party Dependencies**: Standard library only ($D = 1$).
+1. **Dual Adjacency Graph Representation**: Builds forward and backward adjacency structures directly during buffered ASCII ingestion.
+2. **2MB Buffered I/O**: Streams `graph.txt` through a large I/O buffer to minimize syscall overhead while reading 5 million edges.
+3. **Bidirectional Dijkstra Search**: Simultaneously expands Dijkstra searches from the source node ($s$) and target node ($t$), alternating the smaller heap.
+4. **Rigorous Early Termination**: Halts immediately when $\min(\text{heap}_f) + \min(\text{heap}_b) \ge \text{best\_distance}$, cutting search space exponentially compared to standard unidirectional search on road networks.
+5. **Boundary & Edge-Case Safety**: Handles disconnected components (returning `-1`), self-loops, parallel edges, weight 0 edges, and values $> 2^{32}-1$.
+6. **Zero Third-Party Dependencies**: Standard library only ($D = 1$).
 
 ## Dependencies
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Optimized Track D (Traverse): Bidirectional Dijkstra with fast ASCII ingestion and early termination."""
 import heapq
 import os
 import sys
@@ -8,18 +9,22 @@ QUERIES_FILE = "queries.txt"
 OUT_FILE = "distances.txt"
 
 def load_graph(path):
-    with open(path, encoding="ascii") as f:
-        n, m = map(int, f.readline().split())
+    with open(path, "r", encoding="ascii", buffering=2 * 1024 * 1024) as f:
+        header = f.readline().split()
+        n = int(header[0])
         fwd = [[] for _ in range(n)]
         bwd = [[] for _ in range(n)]
         for line in f:
-            u, v, w = map(int, line.split())
+            parts = line.split()
+            u = int(parts[0])
+            v = int(parts[1])
+            w = int(parts[2])
             fwd[u].append((v, w))
             bwd[v].append((u, w))
     return fwd, bwd
 
 def load_queries(path):
-    with open(path, encoding="ascii") as f:
+    with open(path, "r", encoding="ascii") as f:
         return [tuple(map(int, line.split())) for line in f]
 
 def bidir_dijkstra(fwd, bwd, s, t):
