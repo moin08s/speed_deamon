@@ -5,9 +5,9 @@ The task, the input files and the exact output format are in the [spec](https://
 ## Approach
 
 1. **Selective Inverted Indexing**: Reads and analyzes all 50,000 queries first, building an index strictly for query terms rather than the entire 600k+ vocabulary.
-2. **Parallel Corpus Parsing**: Divides `docs.txt` across worker processes using memory-mapped I/O aligned to newline boundaries.
-3. **Frozenset Fast Boolean Operations**: Converts posting lists into frozensets for C-accelerated bitwise set operations (`&`, `|`, `-`).
-4. **Early Exit Candidates for Phrases**: Intersects candidate document sets before scanning token sequences.
+2. **Zero-RAM Document Storage**: Replaced storing 250,000 in-memory string copies with a compact 64-bit integer array (`array('Q')`) storing byte offsets into a memory-mapped `docs.txt`, eliminating over 3 GB of RAM bloat.
+3. **Direct Memory-Mapped Candidate Verification**: Phrase query candidate checks stream directly from memory-mapped slices without heap allocations.
+4. **Frozenset Fast Boolean Operations**: Evaluates boolean query chains using C-accelerated bitwise set operations (`&`, `|`, `-`).
 5. **Zero Third-Party Dependencies**: Standard library only ($D = 1$).
 
 ## Dependencies

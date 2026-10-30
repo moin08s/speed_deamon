@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.13
+"""Optimized Track B (Index): Lean memory-mapped indexing with zero doc-string duplication."""
+import array
 import mmap
-import multiprocessing as mp
 import os
 import re
 import sys
@@ -27,7 +28,7 @@ def run_bool(index, words):
             res = res - post
     return res
 
-def run_phrase(index, texts, terms):
+def run_phrase(index, mm, offsets, terms):
     cands = index.get(terms[0], EMPTY)
     for t in terms[1:]:
         cands = cands & index.get(t, EMPTY)
@@ -36,8 +37,11 @@ def run_phrase(index, texts, terms):
 
     k = len(terms)
     matches = []
-    for doc_id in cands:
-        toks = tokenize(texts[doc_id])
+    # Test sorted candidates
+    for doc_id in sorted(cands):
+        st = offsets[doc_id * 2]
+        ln = offsets[doc_id * 2 + 1]
+        toks = tokenize(mm[st : st + ln])
         for i in range(len(toks) - k + 1):
             if toks[i : i + k] == terms:
                 matches.append(doc_id)
@@ -45,41 +49,18 @@ def run_phrase(index, texts, terms):
     return matches
 
 def format_result(doc_ids):
-    ids = sorted(doc_ids)
+    ids = sorted(doc_ids) if not isinstance(doc_ids, list) else doc_ids
     m = min(10, len(ids))
     parts = [str(len(ids)), str(sum(ids))]
     for i in range(m):
         parts.append(str(ids[i]))
     return " ".join(parts)
 
-def parse_worker(file_path, start, end, needed_terms, q):
-    local_index = {t: [] for t in needed_terms}
-    local_texts = []
-    with open(file_path, "rb") as f:
-        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            idx = start
-            while idx < end:
-                nl = mm.find(b"\n", idx, end)
-                if nl == -1:
-                    line = mm[idx:end]
-                    idx = end
-                else:
-                    line = mm[idx:nl]
-                    idx = nl + 1
-                if not line:
-                    continue
-                id_bytes, _, text = line.partition(b"\t")
-                doc_id = int(id_bytes)
-                local_texts.append((doc_id, text))
-                toks = set(TOKEN_RE.findall(text.lower()))
-                for t in toks.intersection(needed_terms):
-                    local_index[t].append(doc_id)
-    q.put((local_index, local_texts))
-
 def main(data_dir, out_dir):
     docs_path = os.path.join(data_dir, DOCS_FILE)
     queries_path = os.path.join(data_dir, QUERIES_FILE)
 
+    # 1. Parse queries first to identify required vocabulary
     raw_queries = []
     needed_terms = set()
     with open(queries_path, "rb") as f:
@@ -97,54 +78,49 @@ def main(data_dir, out_dir):
                 for t in tokenize(rest):
                     needed_terms.add(t)
 
-    num_workers = 6
-    total_size = os.path.getsize(docs_path)
-    chunk_size = total_size // num_workers
-    ranges = []
+    # 2. Build inverted index using mmap without storing Python string objects for docs
+    index = {t: set() for t in needed_terms}
+    # Use array('Q') for 64-bit offsets to handle docs.txt > 250 MB
+    offsets = array.array("Q")
+
     with open(docs_path, "rb") as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            curr = 0
-            for i in range(num_workers):
-                if i == num_workers - 1:
-                    nxt = total_size
-                else:
-                    nxt = mm.find(b"\n", curr + chunk_size) + 1
-                ranges.append((curr, nxt))
-                curr = nxt
+            idx = 0
+            L = len(mm)
+            while idx < L:
+                nl = mm.find(b"\n", idx)
+                line_end = L if nl == -1 else nl
+                tab = mm.find(b"\t", idx, line_end)
+                if tab != -1:
+                    text_start = tab + 1
+                    text_len = line_end - text_start
+                    doc_id = len(offsets) // 2
+                    offsets.append(text_start)
+                    offsets.append(text_len)
 
-    q = mp.Queue()
-    procs = []
-    for st, en in ranges:
-        p = mp.Process(target=parse_worker, args=(docs_path, st, en, needed_terms, q))
-        p.start()
-        procs.append(p)
+                    # Extract distinct tokens directly from mmap slice
+                    toks = set(TOKEN_RE.findall(mm[text_start:line_end].lower()))
+                    for t in toks.intersection(needed_terms):
+                        index[t].add(doc_id)
+                idx = line_end + 1
 
-    index = {t: set() for t in needed_terms}
-    doc_tuples = []
-    for _ in range(num_workers):
-        sub_index, sub_texts = q.get()
-        doc_tuples.extend(sub_texts)
-        for t, ids in sub_index.items():
-            if ids:
-                index[t].update(ids)
-
-    for p in procs:
-        p.join()
-
+    # Freeze index to optimize set intersections
     frozen_index = {t: frozenset(ids) for t, ids in index.items() if ids}
-    doc_tuples.sort(key=lambda x: x[0])
-    texts = [t[1] for t in doc_tuples]
+    del index
 
+    # 3. Answer queries streaming directly against mmap
     results = []
-    for line in raw_queries:
-        kind, _, rest = line.partition(b" ")
-        if kind == b"BOOL":
-            res = run_bool(frozen_index, rest.split(b" "))
-            results.append(format_result(res) + "\n")
-        elif kind == b"PHRASE":
-            terms = tokenize(rest)
-            res = run_phrase(frozen_index, texts, terms)
-            results.append(format_result(res) + "\n")
+    with open(docs_path, "rb") as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            for line in raw_queries:
+                kind, _, rest = line.partition(b" ")
+                if kind == b"BOOL":
+                    res = run_bool(frozen_index, rest.split(b" "))
+                    results.append(format_result(res) + "\n")
+                elif kind == b"PHRASE":
+                    terms = tokenize(rest)
+                    res = run_phrase(frozen_index, mm, offsets, terms)
+                    results.append(format_result(res) + "\n")
 
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, RESULTS_FILE)
