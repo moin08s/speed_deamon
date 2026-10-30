@@ -1,7 +1,8 @@
-#!/usr/bin/env python3.13
-"""Optimized Track B (Index): Lean memory-mapped indexing with zero doc-string duplication."""
+#!/usr/bin/env python3
+"""Speed Demon 2026: Track B (Index) Fast Multi-Worker Query Answering."""
 import array
 import mmap
+import multiprocessing as mp
 import os
 import re
 import sys
@@ -37,7 +38,6 @@ def run_phrase(index, mm, offsets, terms):
 
     k = len(terms)
     matches = []
-    # Test sorted candidates
     for doc_id in sorted(cands):
         st = offsets[doc_id * 2]
         ln = offsets[doc_id * 2 + 1]
@@ -56,11 +56,25 @@ def format_result(doc_ids):
         parts.append(str(ids[i]))
     return " ".join(parts)
 
+def query_worker(docs_path, offsets, frozen_index, query_chunk, q):
+    results = []
+    with open(docs_path, "rb") as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            for line in query_chunk:
+                kind, _, rest = line.partition(b" ")
+                if kind == b"BOOL":
+                    res = run_bool(frozen_index, rest.split(b" "))
+                    results.append(format_result(res) + "\n")
+                elif kind == b"PHRASE":
+                    terms = tokenize(rest)
+                    res = run_phrase(frozen_index, mm, offsets, terms)
+                    results.append(format_result(res) + "\n")
+    q.put(results)
+
 def main(data_dir, out_dir):
     docs_path = os.path.join(data_dir, DOCS_FILE)
     queries_path = os.path.join(data_dir, QUERIES_FILE)
 
-    # 1. Parse queries first to identify required vocabulary
     raw_queries = []
     needed_terms = set()
     with open(queries_path, "rb") as f:
@@ -78,9 +92,7 @@ def main(data_dir, out_dir):
                 for t in tokenize(rest):
                     needed_terms.add(t)
 
-    # 2. Build inverted index using mmap without storing Python string objects for docs
     index = {t: set() for t in needed_terms}
-    # Use array('Q') for 64-bit offsets to handle docs.txt > 250 MB
     offsets = array.array("Q")
 
     with open(docs_path, "rb") as f:
@@ -98,34 +110,43 @@ def main(data_dir, out_dir):
                     offsets.append(text_start)
                     offsets.append(text_len)
 
-                    # Extract distinct tokens directly from mmap slice
                     toks = set(TOKEN_RE.findall(mm[text_start:line_end].lower()))
                     for t in toks.intersection(needed_terms):
                         index[t].add(doc_id)
                 idx = line_end + 1
 
-    # Freeze index to optimize set intersections
     frozen_index = {t: frozenset(ids) for t, ids in index.items() if ids}
     del index
 
-    # 3. Answer queries streaming directly against mmap
-    results = []
-    with open(docs_path, "rb") as f:
-        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            for line in raw_queries:
-                kind, _, rest = line.partition(b" ")
-                if kind == b"BOOL":
-                    res = run_bool(frozen_index, rest.split(b" "))
-                    results.append(format_result(res) + "\n")
-                elif kind == b"PHRASE":
-                    terms = tokenize(rest)
-                    res = run_phrase(frozen_index, mm, offsets, terms)
-                    results.append(format_result(res) + "\n")
+    # Distribute queries across 4 worker processes to slash query wall time
+    num_workers = 4
+    total_q = len(raw_queries)
+    chunk_size = (total_q + num_workers - 1) // num_workers
+    chunks = [raw_queries[i : i + chunk_size] for i in range(0, total_q, chunk_size)]
+
+    q = mp.Queue()
+    procs = []
+    for c in chunks:
+        p = mp.Process(target=query_worker, args=(docs_path, offsets, frozen_index, c, q))
+        p.start()
+        procs.append(p)
+
+    results_chunks = []
+    for _ in chunks:
+        results_chunks.append(q.get())
+
+    for p in procs:
+        p.join()
+
+    # Flatten ordered results
+    flattened = []
+    for r in results_chunks:
+        flattened.extend(r)
 
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, RESULTS_FILE)
     with open(out_file, "w", encoding="utf-8", newline="\n") as f:
-        f.writelines(results)
+        f.writelines(flattened)
 
 if __name__ == "__main__":
     data_dir = sys.argv[1] if len(sys.argv) > 1 else "/data"
