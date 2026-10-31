@@ -47,7 +47,7 @@ struct MappedFile {
         if (fstat(fd, &st) < 0) { ::close(fd); return false; }
         size = st.st_size;
         if (size == 0) return true;
-        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
         return data != MAP_FAILED;
 #endif
     }
@@ -124,24 +124,16 @@ void load_graph(const char* path, CSRGraph& g) {
     g.fwd_head.assign(g.n + 1, 0);
     g.bwd_head.assign(g.n + 1, 0);
 
-    struct Edge { uint32_t u, v, w; };
-    size_t edges_bytes = (size_t)g.m * sizeof(Edge);
-#ifdef _WIN32
-    Edge* edges = (Edge*)VirtualAlloc(NULL, edges_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-#else
-    Edge* edges = (Edge*)mmap(nullptr, edges_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-#endif
+    const char* edge_data_start = p;
 
+    // Pass 1: Count degrees directly without allocating intermediate edges
     for (uint32_t i = 0; i < g.m; ++i) {
         uint32_t u = parse_uint(p, limit);
         uint32_t v = parse_uint(p, limit);
-        uint32_t w = parse_uint(p, limit);
-        edges[i] = {u, v, w};
+        parse_uint(p, limit); // skip weight in pass 1
         if (u + 1 <= g.n) g.fwd_head[u + 1]++;
         if (v + 1 <= g.n) g.bwd_head[v + 1]++;
     }
-
-    mf.close(); // Unmap graph.txt immediately
 
     for (uint32_t i = 0; i < g.n; ++i) {
         g.fwd_head[i + 1] += g.fwd_head[i];
@@ -156,22 +148,23 @@ void load_graph(const char* path, CSRGraph& g) {
     g.bwd_w.resize(g.m);
     std::vector<uint32_t> bwd_cur = g.bwd_head;
 
+    // Pass 2: Scatter directly into CSR arrays
+    p = edge_data_start;
     for (uint32_t i = 0; i < g.m; ++i) {
-        const auto& e = edges[i];
-        uint32_t pf = fwd_cur[e.u]++;
-        g.fwd_dst[pf] = e.v;
-        g.fwd_w[pf] = e.w;
+        uint32_t u = parse_uint(p, limit);
+        uint32_t v = parse_uint(p, limit);
+        uint32_t w = parse_uint(p, limit);
 
-        uint32_t pb = bwd_cur[e.v]++;
-        g.bwd_dst[pb] = e.u;
-        g.bwd_w[pb] = e.w;
+        uint32_t pf = fwd_cur[u]++;
+        g.fwd_dst[pf] = v;
+        g.fwd_w[pf] = w;
+
+        uint32_t pb = bwd_cur[v]++;
+        g.bwd_dst[pb] = u;
+        g.bwd_w[pb] = w;
     }
 
-#ifdef _WIN32
-    VirtualFree(edges, 0, MEM_RELEASE);
-#else
-    munmap(edges, edges_bytes);
-#endif
+    mf.close(); // Unmap graph.txt immediately
 }
 
 using Element = std::pair<uint64_t, uint32_t>; // (distance, node)
@@ -222,7 +215,7 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             auto [d, u] = ws.hf.back();
             ws.hf.pop_back();
 
-            if (d > ws.dist_f[u]) continue;
+            if (d > ws.dist_f[u] || d >= best) continue;
 
             uint32_t st = g.fwd_head[u];
             uint32_t en = g.fwd_head[u + 1];
@@ -255,7 +248,7 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             auto [d, u] = ws.hb.back();
             ws.hb.pop_back();
 
-            if (d > ws.dist_b[u]) continue;
+            if (d > ws.dist_b[u] || d >= best) continue;
 
             uint32_t st = g.bwd_head[u];
             uint32_t en = g.bwd_head[u + 1];
@@ -323,7 +316,7 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 12;
+    const size_t num_threads = 4;
     std::vector<std::string> thread_outputs(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
