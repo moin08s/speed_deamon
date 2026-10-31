@@ -21,4 +21,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 14 | Zero-allocation flat endpoint arena in Phase 2 reduction | run-9d5408ad00d3 | 0.111 | 71 | 59.43 |
 | 15 | Small-vector inline latency buffer (N<=4 zero-alloc) + O(1) method jump + register sorting | run-c0d84a6a4f84 | 0.092 | 70 | 61.29 |
 | 16 | Small-vector inline latency buffer + fast O(1) method jump | run-09d7c738965a | 0.086 | 70 | 62.02 |
-| 17 | In-flight hour records reclamation + mallopt M_ARENA_MAX=2 | pending | pending | pending | pending |
+| 17 | In-flight hour records reclamation + mallopt M_ARENA_MAX=2 | run-bb0c4edd6d1a | 0.088 | 51 | 63.85 |
+| 18 | Single-pass thread-local direct open-addressing hash aggregation: eliminates 3.1M intermediate record allocations, eager table deallocation, register sorting for N<=4 | pending | pending | pending | pending |
