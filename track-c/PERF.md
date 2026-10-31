@@ -30,4 +30,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 23 | Direct SIMD comma pointer subtraction on unquoted note/name (BOM check regression on hostile CSV) | run-38185f14e0bc | 0.103 | 49 | failure (hash mismatch) |
 | 24 | Restored UTF-8 BOM check in parse_field_int + restored standard unquoted delimiters | run-1b5c2c22c2d0 | 0.103 | 49 | 56.78 |
 | 25 | Open-addressing deduplication test (unbounded probe loop on full table) | run-bffbf6ef22db | timeout | 49 | failure (timeout) |
-| 26 | Fast unescaped quote detection + consecutive hash filter + robust thread-local sort/unique deduplication | pending | | | |
+| 26 | Fast unescaped quote detection + consecutive hash filter + robust thread-local sort/unique deduplication | run-2b88d63da923 | 0.103 | 49 | 56.71 |
+| 27 | DynamicNameSet open-addressing hash set per country (eliminating 3.3M vector allocations and multi-megabyte sorts) | pending | | | |

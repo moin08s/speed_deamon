@@ -77,8 +77,58 @@ struct CountryStats {
     bool has_cents = false;
     int64_t sum_name_len = 0;
     int64_t sum_note_len = 0;
-    uint64_t last_hash = 0;
-    std::vector<uint64_t> name_hashes;
+};
+
+struct DynamicNameSet {
+    uint32_t cap = 64;
+    uint32_t mask = 63;
+    uint32_t count = 0;
+    uint64_t* table = nullptr;
+
+    inline void init(uint32_t initial_cap = 64) {
+        cap = initial_cap;
+        mask = cap - 1;
+        count = 0;
+        table = (uint64_t*)std::calloc(cap, sizeof(uint64_t));
+    }
+
+    inline void insert(uint64_t h) {
+        if (!h) h = 1;
+        size_t idx = (size_t)h & mask;
+        while (table[idx] != 0) {
+            if (table[idx] == h) return;
+            idx = (idx + 1) & mask;
+        }
+        table[idx] = h;
+        count++;
+        if (__builtin_expect(count * 10 >= cap * 7, 0)) {
+            grow();
+        }
+    }
+
+    void grow() {
+        uint32_t old_cap = cap;
+        uint64_t* old_table = table;
+        cap *= 2;
+        mask = cap - 1;
+        table = (uint64_t*)std::calloc(cap, sizeof(uint64_t));
+        for (uint32_t i = 0; i < old_cap; ++i) {
+            if (old_table[i] != 0) {
+                uint64_t v = old_table[i];
+                size_t idx = (size_t)v & mask;
+                while (table[idx] != 0) idx = (idx + 1) & mask;
+                table[idx] = v;
+            }
+        }
+        std::free(old_table);
+    }
+
+    void destroy() {
+        if (table) {
+            std::free(table);
+            table = nullptr;
+        }
+    }
 };
 
 inline char* fast_i64(char* p, int64_t val) {
@@ -424,6 +474,7 @@ int main(int argc, char** argv) {
     for (auto& th : split_threads) th.join();
 
     std::vector<std::vector<CountryStats>> thread_stats(num_threads, std::vector<CountryStats>(num_countries));
+    std::vector<std::vector<DynamicNameSet>> thread_sets(num_threads, std::vector<DynamicNameSet>(num_countries));
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
@@ -434,8 +485,9 @@ int main(int argc, char** argv) {
             if (start >= end) return;
 
             auto& stats = thread_stats[t];
-            for (auto& cs : stats) {
-                cs.name_hashes.reserve(128);
+            auto& sets = thread_sets[t];
+            for (auto& ds : sets) {
+                ds.init(64);
             }
 
             const char* p = mf.data + start;
@@ -477,17 +529,7 @@ int main(int argc, char** argv) {
                 cs.sum_name_len += name_len;
                 cs.sum_note_len += note_len;
 
-                if (name_hash != cs.last_hash || cs.name_hashes.empty()) {
-                    cs.last_hash = name_hash;
-                    cs.name_hashes.push_back(name_hash);
-                }
-            }
-
-            for (auto& cs : stats) {
-                if (!cs.name_hashes.empty()) {
-                    std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
-                    cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
-                }
+                sets[cid].insert(name_hash);
             }
         });
     }
@@ -533,25 +575,26 @@ int main(int argc, char** argv) {
 
                 if (combined.count == 0) continue;
 
-                // Robust Phase 2 deduplication
-                size_t unique_names = 0;
-                if (combined.count == 1) {
-                    unique_names = 1;
-                } else {
-                    all_hashes.clear();
-                    for (size_t pt = 0; pt < num_threads; ++pt) {
-                        const auto& nh = thread_stats[pt][cid].name_hashes;
-                        if (!nh.empty()) {
-                            all_hashes.insert(all_hashes.end(), nh.begin(), nh.end());
+                // Merge unique items from all thread sets for this country
+                all_hashes.clear();
+                for (size_t pt = 0; pt < num_threads; ++pt) {
+                    const auto& ds = thread_sets[pt][cid];
+                    if (ds.count > 0 && ds.table) {
+                        for (uint32_t i = 0; i < ds.cap; ++i) {
+                            if (ds.table[i] != 0) {
+                                all_hashes.push_back(ds.table[i]);
+                            }
                         }
                     }
-                    if (all_hashes.size() <= 1) {
-                        unique_names = all_hashes.size();
-                    } else {
-                        std::sort(all_hashes.begin(), all_hashes.end());
-                        all_hashes.erase(std::unique(all_hashes.begin(), all_hashes.end()), all_hashes.end());
-                        unique_names = all_hashes.size();
-                    }
+                }
+
+                size_t unique_names = 0;
+                if (all_hashes.size() <= 1) {
+                    unique_names = all_hashes.size();
+                } else {
+                    std::sort(all_hashes.begin(), all_hashes.end());
+                    all_hashes.erase(std::unique(all_hashes.begin(), all_hashes.end()), all_hashes.end());
+                    unique_names = all_hashes.size();
                 }
 
                 const std::string& cname = country_names[cid];
@@ -577,6 +620,13 @@ int main(int argc, char** argv) {
                 *lp++ = '\n';
 
                 out.append(line_buf, lp - line_buf);
+            }
+
+            // Free dynamic sets for this range
+            for (size_t pt = 0; pt < num_threads; ++pt) {
+                for (size_t cid = c_start; cid < c_end; ++cid) {
+                    thread_sets[pt][cid].destroy();
+                }
             }
         });
     }
