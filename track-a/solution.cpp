@@ -243,7 +243,7 @@ inline char* fast_u64(char* p, uint64_t val) {
 
 int main(int argc, char** argv) {
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 2);
+    // mallopt removed
     mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
     std::ios_base::sync_with_stdio(false);
@@ -378,7 +378,7 @@ int main(int argc, char** argv) {
                         if (rec.is_err) ed.errors++;
                     }
                     parse_data[pt].hour_records[local_hid].clear();
-                    // shrink_to_fit removed
+                    parse_data[pt].hour_records[local_hid].shrink_to_fit();
                 }
 
                 if (active_eps.empty()) continue;

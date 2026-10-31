@@ -448,6 +448,13 @@ int main(int argc, char** argv) {
                 }
             }
 #endif
+
+            for (auto& cs : stats) {
+                if (!cs.name_hashes.empty()) {
+                    std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
+                    cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
+                }
+            }
         });
     }
 
@@ -469,10 +476,7 @@ int main(int argc, char** argv) {
             out.reserve((c_end - c_start) * 256);
             char line_buf[2048];
 
-            // Open-addressing hash set for deduplication
-            static constexpr size_t HSET_CAP = 65536;
-            static constexpr size_t HSET_MASK = HSET_CAP - 1;
-            std::vector<uint64_t> hset(HSET_CAP, 0);
+
 
             for (size_t cid = c_start; cid < c_end; ++cid) {
                 CountryStats combined;
@@ -496,37 +500,22 @@ int main(int argc, char** argv) {
 
                 if (combined.count == 0) continue;
 
-                // Deduplication
+                // Combine and deduplicate
                 size_t unique_names = 0;
                 if (combined.count == 1) {
                     unique_names = 1;
-                } else if (combined.count <= 16) {
-                    uint64_t small_arr[16];
-                    for (size_t pt = 0; pt < num_threads; ++pt) {
-                        for (uint64_t h : thread_stats[pt][cid].name_hashes) {
-                            for (size_t i = 0; i < unique_names; ++i) {
-                                if (small_arr[i] == h) goto small_seen;
-                            }
-                            small_arr[unique_names++] = h;
-                        small_seen:;
-                        }
-                    }
                 } else {
-                    // O(1) open addressing deduplication
-                    std::fill(hset.begin(), hset.end(), 0);
+                    std::vector<uint64_t> all_hashes;
+                    size_t total_h = 0;
+                    for (size_t pt = 0; pt < num_threads; ++pt) total_h += thread_stats[pt][cid].name_hashes.size();
+                    all_hashes.reserve(total_h);
                     for (size_t pt = 0; pt < num_threads; ++pt) {
-                        for (uint64_t h : thread_stats[pt][cid].name_hashes) {
-                            uint64_t key = h ? h : 1;
-                            size_t idx = key & HSET_MASK;
-                            while (hset[idx] != 0) {
-                                if (hset[idx] == key) goto already_seen;
-                                idx = (idx + 1) & HSET_MASK;
-                            }
-                            hset[idx] = key;
-                            unique_names++;
-                        already_seen:;
-                        }
+                        const auto& nh = thread_stats[pt][cid].name_hashes;
+                        all_hashes.insert(all_hashes.end(), nh.begin(), nh.end());
                     }
+                    std::sort(all_hashes.begin(), all_hashes.end());
+                    all_hashes.erase(std::unique(all_hashes.begin(), all_hashes.end()), all_hashes.end());
+                    unique_names = all_hashes.size();
                 }
 
                 const std::string& cname = country_names[cid];
