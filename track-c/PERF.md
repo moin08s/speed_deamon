@@ -11,4 +11,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 4 | Native C++20 implementation: POSIX mmap CSV parsing, 6 worker threads, direct flat array region-to-country lookup table, zero external dependencies | run-0027b91ca45f | 1.87 | 471 | 15.36 |
 | 5 | Single-pass O(N) quote scan + 64-bit FNV name hashing + in-vector deduplication + flat region-to-country direct lookup table | run-0c8b2c109fd7 | 0.30 | 74 | 43.32 |
 | 6 | 12-thread parallel country stats consolidation, hash set union deduplication, and buffered 1MB file streaming | run-f616def5a725 | 0.18 | 73 | 48.48 |
-| 7 | In-place mmap regions parsing with 1024-slot CountryMap, parallel 12-thread per-country name hash collection + consolidation, immediate mmap unmap, fast buffer output | pending | pending | pending | pending |
+| 7 | In-place mmap regions parsing with 1024-slot CountryMap, parallel 12-thread per-country name hash collection + consolidation, immediate mmap unmap, fast buffer output | run-2cce13f9c122 | 0.168 | 70 | 49.98 |
+| 8 | Canonical alphabetical country mapping + single flat contiguous NameEntry vector per thread (zero heap allocations during parsing) + MADV_DONTNEED page cache dropping + monotonic pointer merge | pending | pending | pending | pending |
