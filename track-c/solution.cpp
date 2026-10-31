@@ -373,33 +373,50 @@ int main(int argc, char** argv) {
         std::string country;
         CountryStats cs;
     };
+    std::vector<std::vector<FinalCountryEntry>> thread_finals(num_threads);
+    threads.clear();
+    size_t c_chunk = (countries.size() + num_threads - 1) / num_threads;
+
+    for (size_t t = 0; t < num_threads; ++t) {
+        size_t c_start = t * c_chunk;
+        size_t c_end = std::min(countries.size(), c_start + c_chunk);
+        threads.emplace_back([&, t, c_start, c_end]() {
+            for (size_t i = c_start; i < c_end; ++i) {
+                CountryStats combined;
+                for (size_t pt = 0; pt < num_threads; ++pt) {
+                    const auto& ts = thread_stats[pt][i];
+                    if (ts.count == 0) continue;
+                    combined.count += ts.count;
+                    combined.sum_rec_id += ts.sum_rec_id;
+                    combined.sum_cents += ts.sum_cents;
+                    if (!combined.has_cents) {
+                        combined.min_cents = ts.min_cents;
+                        combined.max_cents = ts.max_cents;
+                        combined.has_cents = true;
+                    } else {
+                        if (ts.min_cents < combined.min_cents) combined.min_cents = ts.min_cents;
+                        if (ts.max_cents > combined.max_cents) combined.max_cents = ts.max_cents;
+                    }
+                    combined.sum_name_len += ts.sum_name_len;
+                    combined.sum_note_len += ts.sum_note_len;
+                    combined.name_hashes.insert(combined.name_hashes.end(), ts.name_hashes.begin(), ts.name_hashes.end());
+                }
+                if (combined.count > 0) {
+                    std::sort(combined.name_hashes.begin(), combined.name_hashes.end());
+                    combined.name_hashes.erase(std::unique(combined.name_hashes.begin(), combined.name_hashes.end()), combined.name_hashes.end());
+                    thread_finals[t].push_back({countries[i], std::move(combined)});
+                }
+            }
+        });
+    }
+
+    for (auto& t : threads) t.join();
+
     std::vector<FinalCountryEntry> final_entries;
     final_entries.reserve(countries.size());
-
-    for (size_t i = 0; i < countries.size(); ++i) {
-        CountryStats combined;
-        for (size_t t = 0; t < num_threads; ++t) {
-            const auto& ts = thread_stats[t][i];
-            if (ts.count == 0) continue;
-            combined.count += ts.count;
-            combined.sum_rec_id += ts.sum_rec_id;
-            combined.sum_cents += ts.sum_cents;
-            if (!combined.has_cents) {
-                combined.min_cents = ts.min_cents;
-                combined.max_cents = ts.max_cents;
-                combined.has_cents = true;
-            } else {
-                if (ts.min_cents < combined.min_cents) combined.min_cents = ts.min_cents;
-                if (ts.max_cents > combined.max_cents) combined.max_cents = ts.max_cents;
-            }
-            combined.sum_name_len += ts.sum_name_len;
-            combined.sum_note_len += ts.sum_note_len;
-            combined.name_hashes.insert(combined.name_hashes.end(), ts.name_hashes.begin(), ts.name_hashes.end());
-        }
-        if (combined.count > 0) {
-            std::sort(combined.name_hashes.begin(), combined.name_hashes.end());
-            combined.name_hashes.erase(std::unique(combined.name_hashes.begin(), combined.name_hashes.end()), combined.name_hashes.end());
-            final_entries.push_back({countries[i], std::move(combined)});
+    for (size_t t = 0; t < num_threads; ++t) {
+        for (auto& entry : thread_finals[t]) {
+            final_entries.push_back(std::move(entry));
         }
     }
 
