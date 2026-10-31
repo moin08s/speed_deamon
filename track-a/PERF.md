@@ -13,4 +13,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 6 | Fully parallel hour-partitioned reduction with zero-lock concurrent percentile computation and direct chunked serialization | run-b99ec8b90d2b | 0.09 | 81 | 60.25 |
 | 7 | O(N) counting sort on hour IDs eliminating std::sort + latency buffer capacity reuse | run-d8fe10ccd04a | 0.09 | 92 | 60.01 |
 | 8 | Per-hour bucketed parsing to eliminate sorted_records vector + direct global-to-local indexing | run-d4f5949e00fa | 0.089 | 73 | 61.23 |
-| 9 | In-flight hour record reclamation during reduction | pending-run | 0.04 | 28 | 85.00 |
+| 9 | Scaled initial vector reservations from 64K to 4K and pre-reserved 64 entries on endpoint creation | run-2881745e8349 | 0.089 | 76 | 61.83 |
+| 10 | Immediate MADV_DONTNEED page cache release on log chunks + in-flight hour record reclamation + n<=64 insertion sort threshold | pending | pending | pending | pending |

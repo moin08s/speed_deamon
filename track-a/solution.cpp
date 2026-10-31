@@ -192,6 +192,14 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         while (lat_ptr < limit && *lat_ptr != '\n') lat_ptr++;
         p = (lat_ptr < limit) ? lat_ptr + 1 : limit;
     }
+
+#ifndef _WIN32
+    if (end > start) {
+        uintptr_t page_start = (uintptr_t)(buf + start) & ~4095ULL;
+        uintptr_t page_end = ((uintptr_t)(buf + end) + 4095ULL) & ~4095ULL;
+        madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+    }
+#endif
 }
 
 inline char* fast_u32(char* p, uint32_t val) {
@@ -360,6 +368,8 @@ int main(int argc, char** argv) {
                         ed.latencies.push_back(rec.lat);
                         if (rec.is_err) ed.errors++;
                     }
+                    parse_data[pt].hour_records[local_hid].clear();
+                    parse_data[pt].hour_records[local_hid].shrink_to_fit();
                 }
 
                 if (active_eps.empty()) continue;
@@ -379,7 +389,7 @@ int main(int argc, char** argv) {
                     size_t idx99 = (99ULL * n + 99) / 100 - 1;
 
                     uint32_t p50, p95, p99;
-                    if (n <= 16) {
+                    if (n <= 64) {
                         std::sort(lat.begin(), lat.end());
                         p50 = lat[idx50];
                         p95 = lat[idx95];
