@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <malloc.h>
 #endif
 
 struct MappedFile {
@@ -48,7 +49,7 @@ struct MappedFile {
         if (fstat(fd, &st) < 0) { ::close(fd); return false; }
         size = st.st_size;
         if (size == 0) return true;
-        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
         return data != MAP_FAILED;
 #endif
     }
@@ -65,18 +66,17 @@ struct MappedFile {
         size = 0;
     }
 
-    ~MappedFile() {
-        close();
-    }
+    ~MappedFile() { close(); }
 };
 
-static uint8_t IS_ALNUM[256];
+static uint8_t CHAR_MAP[256];
 static void init_tables() {
     static bool inited = false;
     if (inited) return;
-    std::memset(IS_ALNUM, 0, 256);
-    for (char c = 'a'; c <= 'z'; ++c) IS_ALNUM[(uint8_t)c] = 1;
-    for (char c = '0'; c <= '9'; ++c) IS_ALNUM[(uint8_t)c] = 1;
+    std::memset(CHAR_MAP, 0, 256);
+    for (char c = '0'; c <= '9'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)c;
+    for (char c = 'a'; c <= 'z'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)c;
+    for (char c = 'A'; c <= 'Z'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)(c + 32);
     inited = true;
 }
 
@@ -119,6 +119,7 @@ inline char* fast_u64(char* p, uint64_t val) {
     return p;
 }
 
+// Zero-allocation flat term table: stores string pointer directly into mmap!
 struct FastTermTable {
     static constexpr uint32_t CAPACITY = 524288;
     static constexpr uint32_t MASK = CAPACITY - 1;
@@ -126,7 +127,7 @@ struct FastTermTable {
     struct Entry {
         uint64_t hash = 0;
         uint32_t len = 0;
-        std::string word;
+        const char* ptr = nullptr;
         int id = -1;
     };
 
@@ -138,23 +139,30 @@ struct FastTermTable {
     static inline uint64_t hash_term(const char* p, size_t len) {
         uint64_t h = 0xcbf29ce484222325ULL;
         for (size_t i = 0; i < len; ++i) {
-            h = (h ^ (unsigned char)p[i]) * 0x100000001b3ULL;
+            h = (h ^ (unsigned char)to_lower_char(p[i])) * 0x100000001b3ULL;
         }
         return h ? h : 1;
     }
 
-    int insert(const std::string& s) {
-        uint64_t h = hash_term(s.data(), s.size());
+    int insert(const char* p, size_t len) {
+        uint64_t h = hash_term(p, len);
         uint32_t idx = (uint32_t)h & MASK;
         while (table[idx].hash != 0) {
-            if (table[idx].hash == h && table[idx].len == s.size() && table[idx].word == s) {
-                return table[idx].id;
+            if (table[idx].hash == h && table[idx].len == len) {
+                bool eq = true;
+                for (size_t i = 0; i < len; ++i) {
+                    if (to_lower_char(table[idx].ptr[i]) != to_lower_char(p[i])) {
+                        eq = false;
+                        break;
+                    }
+                }
+                if (eq) return table[idx].id;
             }
             idx = (idx + 1) & MASK;
         }
         table[idx].hash = h;
-        table[idx].len = (uint32_t)s.size();
-        table[idx].word = s;
+        table[idx].len = (uint32_t)len;
+        table[idx].ptr = p;
         table[idx].id = count++;
         return table[idx].id;
     }
@@ -164,9 +172,9 @@ struct FastTermTable {
         while (table[idx].hash != 0) {
             if (table[idx].hash == h && table[idx].len == len) {
                 bool eq = true;
-                const char* tw = table[idx].word.data();
+                const char* tw = table[idx].ptr;
                 for (size_t i = 0; i < len; ++i) {
-                    if (to_lower_char(p[i]) != tw[i]) {
+                    if (to_lower_char(p[i]) != to_lower_char(tw[i])) {
                         eq = false;
                         break;
                     }
@@ -209,13 +217,13 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
             continue;
         }
 
-        if (idx > 0 && IS_ALNUM[(uint8_t)to_lower_char(text[idx - 1])]) {
+        if (idx > 0 && CHAR_MAP[(uint8_t)text[idx - 1]]) {
             pos = idx + 1;
             continue;
         }
 
         size_t end_idx = idx + len_first;
-        if (end_idx < L && IS_ALNUM[(uint8_t)to_lower_char(text[end_idx])]) {
+        if (end_idx < L && CHAR_MAP[(uint8_t)text[end_idx]]) {
             pos = idx + 1;
             continue;
         }
@@ -227,7 +235,7 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
             const std::string& term = terms[t];
             size_t len_t = term.size();
 
-            while (cur_pos < L && !IS_ALNUM[(uint8_t)to_lower_char(text[cur_pos])]) {
+            while (cur_pos < L && CHAR_MAP[(uint8_t)text[cur_pos]] == 0) {
                 cur_pos++;
             }
             if (cur_pos + len_t > L) {
@@ -246,7 +254,7 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
                 break;
             }
             size_t after_t = cur_pos + len_t;
-            if (after_t < L && IS_ALNUM[(uint8_t)to_lower_char(text[after_t])]) {
+            if (after_t < L && CHAR_MAP[(uint8_t)text[after_t]]) {
                 matched_all = false;
                 break;
             }
@@ -270,12 +278,14 @@ struct Query {
     std::vector<std::string> phrase_terms;
 };
 
-
-
 int main(int argc, char** argv) {
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
     init_tables();
+
+#ifndef _WIN32
+    mallopt(M_ARENA_MAX, 2);
+#endif
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
     std::string out_dir = (argc > 2) ? argv[2] : "/out";
@@ -292,6 +302,7 @@ int main(int argc, char** argv) {
     const char* qp = qmf.data;
     const char* q_limit = qmf.data + qmf.size;
 
+    // Fast zero-allocation queries parsing directly on memory-mapped file
     while (qp < q_limit) {
         while (qp < q_limit && (*qp == '\r' || *qp == '\n')) qp++;
         if (qp >= q_limit) break;
@@ -307,46 +318,45 @@ int main(int argc, char** argv) {
         if (line_len >= 5 && std::memcmp(q_line_start, "BOOL ", 5) == 0) {
             q.type = QUERY_BOOL;
             const char* p = q_line_start + 5;
-            std::string cur;
             bool is_op = false;
             while (p < q_line_end) {
                 while (p < q_line_end && *p == ' ') p++;
                 if (p >= q_line_end) break;
-                cur.clear();
-                while (p < q_line_end && *p != ' ') {
-                    cur.push_back(*p);
-                    p++;
-                }
+                const char* w_start = p;
+                while (p < q_line_end && *p != ' ') p++;
+                size_t w_len = p - w_start;
+
                 if (!is_op) {
-                    for (char& c : cur) c = to_lower_char(c);
-                    q.bool_terms.push_back(term_table.insert(cur));
+                    q.bool_terms.push_back(term_table.insert(w_start, w_len));
                     is_op = true;
                 } else {
-                    if (cur == "AND") q.bool_ops.push_back(OP_AND);
-                    else if (cur == "OR") q.bool_ops.push_back(OP_OR);
-                    else if (cur == "NOT") q.bool_ops.push_back(OP_NOT);
+                    if (w_len == 3 && std::memcmp(w_start, "AND", 3) == 0) q.bool_ops.push_back(OP_AND);
+                    else if (w_len == 2 && std::memcmp(w_start, "OR", 2) == 0) q.bool_ops.push_back(OP_OR);
+                    else if (w_len == 3 && std::memcmp(w_start, "NOT", 3) == 0) q.bool_ops.push_back(OP_NOT);
                     is_op = false;
                 }
             }
         } else if (line_len >= 7 && std::memcmp(q_line_start, "PHRASE ", 7) == 0) {
             q.type = QUERY_PHRASE;
             const char* p = q_line_start + 7;
-            std::string cur;
             while (p < q_line_end) {
-                while (p < q_line_end && !IS_ALNUM[(uint8_t)to_lower_char(*p)]) p++;
+                while (p < q_line_end && CHAR_MAP[(uint8_t)*p] == 0) p++;
                 if (p >= q_line_end) break;
-                cur.clear();
-                while (p < q_line_end && IS_ALNUM[(uint8_t)to_lower_char(*p)]) {
-                    cur.push_back(to_lower_char(*p));
-                    p++;
-                }
-                q.phrase_terms.push_back(cur);
-                q.phrase_term_ids.push_back(term_table.insert(cur));
+                const char* w_start = p;
+                while (p < q_line_end && CHAR_MAP[(uint8_t)*p]) p++;
+                size_t w_len = p - w_start;
+
+                std::string cur;
+                cur.reserve(w_len);
+                for (size_t i = 0; i < w_len; ++i) cur.push_back((char)CHAR_MAP[(uint8_t)w_start[i]]);
+
+                q.phrase_term_ids.push_back(term_table.insert(w_start, w_len));
+                q.phrase_terms.push_back(std::move(cur));
             }
         }
         queries.push_back(std::move(q));
     }
-    qmf.close(); // Unmap queries.txt immediately
+
 
     size_t num_terms = term_table.count;
 
@@ -418,12 +428,14 @@ int main(int argc, char** argv) {
                     }
                     const char* tp = text_start;
                     while (tp < line_end) {
-                        while (tp < line_end && !IS_ALNUM[(uint8_t)to_lower_char(*tp)]) tp++;
+                        while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
                         if (tp >= line_end) break;
                         const char* w_start = tp;
                         uint64_t h = 0xcbf29ce484222325ULL;
-                        while (tp < line_end && IS_ALNUM[(uint8_t)to_lower_char(*tp)]) {
-                            h = (h ^ (unsigned char)to_lower_char(*tp)) * 0x100000001b3ULL;
+                        while (tp < line_end) {
+                            uint8_t ch = CHAR_MAP[(uint8_t)*tp];
+                            if (ch == 0) break;
+                            h = (h ^ ch) * 0x100000001b3ULL;
                             tp++;
                         }
                         size_t w_len = tp - w_start;
@@ -498,12 +510,14 @@ int main(int argc, char** argv) {
                     }
                     const char* tp = text_start;
                     while (tp < line_end) {
-                        while (tp < line_end && !IS_ALNUM[(uint8_t)to_lower_char(*tp)]) tp++;
+                        while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
                         if (tp >= line_end) break;
                         const char* w_start = tp;
                         uint64_t h = 0xcbf29ce484222325ULL;
-                        while (tp < line_end && IS_ALNUM[(uint8_t)to_lower_char(*tp)]) {
-                            h = (h ^ (unsigned char)to_lower_char(*tp)) * 0x100000001b3ULL;
+                        while (tp < line_end) {
+                            uint8_t ch = CHAR_MAP[(uint8_t)*tp];
+                            if (ch == 0) break;
+                            h = (h ^ ch) * 0x100000001b3ULL;
                             tp++;
                         }
                         size_t w_len = tp - w_start;
@@ -540,13 +554,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Free thread indices immediately to minimize peak memory
     thread_indices.clear();
     thread_indices.shrink_to_fit();
     thread_start.clear();
     thread_start.shrink_to_fit();
 
-    // Query helper: get postings slice for a term
     auto get_postings = [&](int term_id) -> std::pair<const uint32_t*, size_t> {
         if (term_id < 0 || (size_t)term_id >= num_terms) return {nullptr, 0};
         uint32_t st = term_offsets[term_id];
@@ -555,7 +567,6 @@ int main(int argc, char** argv) {
         return {&postings_data[st], en - st};
     };
 
-    // Evaluate queries in parallel directly to thread buffers
     size_t total_queries = queries.size();
     std::vector<std::string> thread_outputs(num_threads);
 
@@ -584,7 +595,6 @@ int main(int argc, char** argv) {
                         }
 
                         if (all_and && q.bool_terms.size() > 1) {
-                            // Sort terms by postings length ascending
                             std::vector<int> sorted_terms = q.bool_terms;
                             std::sort(sorted_terms.begin(), sorted_terms.end(), [&](int a, int b) {
                                 auto [pa, la] = get_postings(a);
@@ -652,7 +662,6 @@ int main(int argc, char** argv) {
                     }
                 } else if (q.type == QUERY_PHRASE) {
                     if (!q.phrase_term_ids.empty()) {
-                        // Find term with smallest postings list first
                         size_t min_idx = 0;
                         size_t min_len = (size_t)-1;
                         for (size_t k = 0; k < q.phrase_term_ids.size(); ++k) {
@@ -737,6 +746,7 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
+
 
     return 0;
 }

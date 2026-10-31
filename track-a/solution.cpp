@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <utility>
+#include <chrono>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -238,16 +239,28 @@ inline char* fast_u64(char* p, uint64_t val) {
     return p;
 }
 
+struct FlatRec {
+    uint32_t lat;
+    uint16_t gid;
+    uint8_t is_err;
+};
+
 int main(int argc, char** argv) {
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
 
+#ifndef _WIN32
+    mallopt(M_ARENA_MAX, 2);
+#endif
+
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
     std::string out_dir = (argc > 2) ? argv[2] : "/out";
 
-    std::string input_path = data_dir + "/requests.log";
+    std::string log_path = data_dir + "/requests.log";
     MappedFile mf;
-    if (!mf.open(input_path.c_str())) return 1;
+    if (!mf.open(log_path.c_str())) {
+        return 1;
+    }
 
     if (mf.size == 0) {
         std::string out_path = out_dir + "/summary.txt";
@@ -324,7 +337,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Phase 2: Parallel Reduction by Hour
+    // Phase 2: Parallel Reduction by Hour with Zero Dynamic Allocations per Endpoint
     std::vector<std::string> thread_outputs(num_threads);
     threads.clear();
 
@@ -339,19 +352,16 @@ int main(int argc, char** argv) {
             std::string& out_buf = thread_outputs[t];
             out_buf.reserve((h_end - h_start) * 2000 * 96);
 
-            struct EpData {
-                std::vector<uint32_t> latencies;
-                uint32_t errors = 0;
-            };
+            std::vector<FlatRec> hr_recs;
+            hr_recs.reserve(65536);
 
-            std::vector<EpData> ep_data(num_eps);
-            std::vector<uint32_t> active_eps;
-            active_eps.reserve(2048);
+            std::vector<uint32_t> lat_vec;
+            lat_vec.reserve(8192);
 
             char line_buf[2048];
 
             for (size_t h = h_start; h < h_end; ++h) {
-                active_eps.clear();
+                hr_recs.clear();
 
                 for (size_t pt = 0; pt < num_threads; ++pt) {
                     int local_hid = global_to_local_hour[pt][h];
@@ -362,58 +372,62 @@ int main(int argc, char** argv) {
 
                     for (const auto& rec : recs) {
                         uint32_t gid = remap_eid[rec.eid];
-                        auto& ed = ep_data[gid];
-                        if (ed.latencies.empty()) {
-                            active_eps.push_back(gid);
-                            if (ed.latencies.capacity() == 0) ed.latencies.reserve(64);
-                        }
-                        ed.latencies.push_back(rec.lat);
-                        if (rec.is_err) ed.errors++;
+                        hr_recs.push_back({rec.lat, (uint16_t)gid, rec.is_err});
                     }
-                    parse_data[pt].hour_records[local_hid].clear();
-                    parse_data[pt].hour_records[local_hid].shrink_to_fit();
                 }
 
-                if (active_eps.empty()) continue;
+                if (hr_recs.empty()) continue;
 
-                std::sort(active_eps.begin(), active_eps.end());
+                // Sort by endpoint ID to make records for the same endpoint strictly contiguous
+                std::sort(hr_recs.begin(), hr_recs.end(), [](const FlatRec& a, const FlatRec& b) {
+                    return a.gid < b.gid;
+                });
 
                 const std::string& hr_str = global_hours[h];
+                size_t total_r = hr_recs.size();
+                size_t i = 0;
 
-                for (uint32_t gid : active_eps) {
-                    auto& ed = ep_data[gid];
-                    auto& lat = ed.latencies;
-                    size_t n = lat.size();
-                    if (n == 0) continue;
+                while (i < total_r) {
+                    uint16_t cur_gid = hr_recs[i].gid;
+                    size_t j = i;
+                    uint32_t errors = 0;
 
+                    lat_vec.clear();
+                    while (j < total_r && hr_recs[j].gid == cur_gid) {
+                        lat_vec.push_back(hr_recs[j].lat);
+                        if (hr_recs[j].is_err) errors++;
+                        j++;
+                    }
+
+                    size_t n = lat_vec.size();
                     size_t idx50 = (50ULL * n + 99) / 100 - 1;
                     size_t idx95 = (95ULL * n + 99) / 100 - 1;
                     size_t idx99 = (99ULL * n + 99) / 100 - 1;
 
                     uint32_t p50, p95, p99;
                     if (n == 1) {
-                        p50 = p95 = p99 = lat[0];
+                        p50 = p95 = p99 = lat_vec[0];
                     } else if (n == 2) {
-                        if (lat[0] > lat[1]) std::swap(lat[0], lat[1]);
-                        p50 = lat[idx50];
-                        p95 = lat[idx95];
-                        p99 = lat[idx99];
+                        if (lat_vec[0] > lat_vec[1]) std::swap(lat_vec[0], lat_vec[1]);
+                        p50 = lat_vec[idx50];
+                        p95 = lat_vec[idx95];
+                        p99 = lat_vec[idx99];
                     } else if (n <= 64) {
-                        std::sort(lat.begin(), lat.end());
-                        p50 = lat[idx50];
-                        p95 = lat[idx95];
-                        p99 = lat[idx99];
+                        std::sort(lat_vec.begin(), lat_vec.end());
+                        p50 = lat_vec[idx50];
+                        p95 = lat_vec[idx95];
+                        p99 = lat_vec[idx99];
                     } else {
-                        std::nth_element(lat.begin(), lat.begin() + idx50, lat.end());
-                        p50 = lat[idx50];
-                        std::nth_element(lat.begin() + idx50 + 1, lat.begin() + idx95, lat.end());
-                        p95 = lat[idx95];
-                        std::nth_element(lat.begin() + idx95 + 1, lat.begin() + idx99, lat.end());
-                        p99 = lat[idx99];
+                        std::nth_element(lat_vec.begin(), lat_vec.begin() + idx50, lat_vec.end());
+                        p50 = lat_vec[idx50];
+                        std::nth_element(lat_vec.begin() + idx50 + 1, lat_vec.begin() + idx95, lat_vec.end());
+                        p95 = lat_vec[idx95];
+                        std::nth_element(lat_vec.begin() + idx95 + 1, lat_vec.begin() + idx99, lat_vec.end());
+                        p99 = lat_vec[idx99];
                     }
 
-                    uint64_t ppm = (uint64_t)ed.errors * 1000000ULL / n;
-                    const std::string& ep_str = global_endpoints[gid];
+                    uint64_t ppm = (uint64_t)errors * 1000000ULL / n;
+                    const std::string& ep_str = global_endpoints[cur_gid];
 
                     char* p = line_buf;
                     std::memcpy(p, hr_str.data(), 13);
@@ -431,16 +445,13 @@ int main(int argc, char** argv) {
                     *p++ = ' ';
                     p = fast_u32(p, p99);
                     *p++ = ' ';
-                    p = fast_u32(p, ed.errors);
+                    p = fast_u32(p, errors);
                     *p++ = ' ';
                     p = fast_u64(p, ppm);
                     *p++ = '\n';
 
                     out_buf.append(line_buf, p - line_buf);
-
-                    // Clear for next hour
-                    ed.latencies.clear();
-                    ed.errors = 0;
+                    i = j;
                 }
             }
         });
@@ -453,12 +464,13 @@ int main(int argc, char** argv) {
     std::string out_path = out_dir + "/summary.txt";
     FILE* fp = fopen(out_path.c_str(), "wb");
     if (!fp) return 1;
-    char file_buf[2097152];
-    setvbuf(fp, file_buf, _IOFBF, sizeof(file_buf));
 
-    for (size_t i = 0; i < num_threads; ++i) {
-        if (!thread_outputs[i].empty()) {
-            fwrite(thread_outputs[i].data(), 1, thread_outputs[i].size(), fp);
+    char out_buf[1048576];
+    setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
+
+    for (size_t t = 0; t < num_threads; ++t) {
+        if (!thread_outputs[t].empty()) {
+            fwrite(thread_outputs[t].data(), 1, thread_outputs[t].size(), fp);
         }
     }
     fclose(fp);

@@ -19,3 +19,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 12 | Bitset-accelerated character boundary scan + contiguous string buffers | run-f51796761f47 | 0.96 | 153 | 47.78 |
 | 13 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + trim threshold | run-394989270c96 | 1.22 | 138 | 45.69 |
 | 14 | Restored flat two-pass direct postings scatter with zero intermediate heap vectors | run-3fb86689f067 | 1.01 | 161 | 47.29 |
+| 15 | Zero-allocation FastTermTable pointer lookup on mmap queries.txt + fast CHAR_MAP character translation + contention-free arena allocation (mallopt M_ARENA_MAX=2) | pending | pending | pending | pending |
