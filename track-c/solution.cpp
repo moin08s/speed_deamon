@@ -16,7 +16,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <malloc.h>
 #endif
 
 struct MappedFile {
@@ -232,6 +231,44 @@ inline int64_t parse_field_cents(const char*& p, const char* limit) {
     return neg ? -val : val;
 }
 
+size_t find_fast_split(const char* data, size_t size, size_t target) {
+    size_t idx = target;
+    while (idx < size) {
+        const char* nl_ptr = (const char*)std::memchr(data + idx, '\n', size - idx);
+        if (!nl_ptr) return size;
+        size_t nl = nl_ptr - data;
+
+        // Check if preceded by .\d\d
+        if (nl >= 4 && data[nl - 3] == '.' &&
+            data[nl - 2] >= '0' && data[nl - 2] <= '9' &&
+            data[nl - 1] >= '0' && data[nl - 1] <= '9') {
+            
+            // Find line start
+            size_t search_back = (nl > 1000) ? nl - 1000 : 0;
+            size_t prev_nl = search_back;
+            const char* cur = data + nl - 1;
+            while (cur >= data + search_back && *cur != '\n') cur--;
+            size_t line_start = (cur >= data + search_back) ? (cur - data + 1) : 0;
+
+            // Check if line starts with digits followed by comma
+            size_t p = line_start;
+            while (p < nl && data[p] >= '0' && data[p] <= '9') p++;
+            if (p > line_start && p < nl && data[p] == ',') {
+                // Count quotes on this single line
+                size_t line_quotes = 0;
+                for (size_t q = line_start; q < nl; ++q) {
+                    if (data[q] == '"') line_quotes++;
+                }
+                if (line_quotes % 2 == 0) {
+                    return nl + 1;
+                }
+            }
+        }
+        idx = nl + 1;
+    }
+    return size;
+}
+
 int main(int argc, char** argv) {
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
@@ -243,7 +280,6 @@ int main(int argc, char** argv) {
     MappedFile rf;
     if (!rf.open(regions_path.c_str())) return 1;
 
-    // Fast Country Indexing
     std::vector<std::string> raw_country_names;
     raw_country_names.reserve(300);
 
@@ -347,24 +383,9 @@ int main(int argc, char** argv) {
     std::vector<size_t> split_points;
     split_points.push_back(0);
 
-    // Fast chunk split: scan quotes to guarantee exact CSV boundary
-    size_t running_quotes = 0;
-    size_t scan_idx = 0;
     for (size_t i = 1; i < num_threads; ++i) {
         size_t target = i * (mf.size / num_threads);
-        while (scan_idx < target && scan_idx < mf.size) {
-            if (mf.data[scan_idx] == '"') running_quotes++;
-            scan_idx++;
-        }
-        while (scan_idx < mf.size) {
-            if (mf.data[scan_idx] == '"') running_quotes++;
-            if (mf.data[scan_idx] == '\n' && (running_quotes % 2 == 0)) {
-                split_points.push_back(scan_idx + 1);
-                scan_idx++;
-                break;
-            }
-            scan_idx++;
-        }
+        split_points.push_back(find_fast_split(mf.data, mf.size, target));
     }
     split_points.push_back(mf.size);
 
@@ -424,7 +445,6 @@ int main(int argc, char** argv) {
                 cs.name_hashes.push_back(name_hash);
             }
 
-            // Local thread deduplication
             for (auto& cs : stats) {
                 if (!cs.name_hashes.empty()) {
                     std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
@@ -533,6 +553,7 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
+
 
     return 0;
 }

@@ -16,3 +16,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 9 | Streaming 256KB madvise page eviction in parse loop + glibc single-arena restriction (mallopt M_ARENA_MAX=1) | run-1788cb47745a | 0.177 | 45 | 51.15 |
 | 10 | Robust two-level parallel deduplication (thread-local L1 sort + Phase 2 merge sort) with small-count bypass | run-2079be2556fa | 0.200 | 47 | 49.85 |
 | 11 | Robust two-level deduplication + canonical alphabetical indexing | run-bb72ae47e296 | 0.168 | 47 | 51.84 |
+| 12 | O(1) localized fast-split boundary detection (eliminating 20MB full quote scan) | pending | pending | pending | pending |
