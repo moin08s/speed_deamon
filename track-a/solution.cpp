@@ -117,9 +117,10 @@ struct FastStringMap {
     static constexpr size_t MASK = CAPACITY - 1;
 
     struct Entry {
-        uint64_t hash = 0;
+        uint32_t hash = 0;
         uint32_t len = 0;
         int id = -1;
+        uint32_t _pad = 0;
         const char* str = nullptr;
     };
 
@@ -130,36 +131,17 @@ struct FastStringMap {
         std::memset(entries, 0, sizeof(entries));
     }
 
-    inline int get_or_insert(const char* s, size_t len) {
-        uint64_t h = 0xcbf29ce484222325ULL;
-#if defined(__x86_64__) || defined(_M_X64)
-        size_t rem = len;
-        const char* ptr = s;
-        while (rem >= 8) {
-            uint64_t v;
-            std::memcpy(&v, ptr, 8);
-            h = _mm_crc32_u64(h, v);
-            ptr += 8;
-            rem -= 8;
-        }
-        while (rem > 0) {
-            h = _mm_crc32_u8((uint32_t)h, (uint8_t)*ptr++);
-            rem--;
-        }
-#else
-        for (size_t i = 0; i < len; ++i) {
-            h = (h ^ (unsigned char)s[i]) * 0x100000001b3ULL;
-        }
-#endif
-        size_t idx = h & MASK;
+    inline int get_or_insert(const char* s, size_t len, uint32_t h) {
+        uint32_t target_h = h ? h : 1;
+        size_t idx = target_h & MASK;
         while (entries[idx].hash != 0) {
-            if (entries[idx].hash == h && entries[idx].len == len &&
+            if (entries[idx].hash == target_h && entries[idx].len == len &&
                 std::memcmp(entries[idx].str, s, len) == 0) {
                 return entries[idx].id;
             }
             idx = (idx + 1) & MASK;
         }
-        entries[idx].hash = h ? h : 1;
+        entries[idx].hash = target_h;
         entries[idx].len = (uint32_t)len;
         entries[idx].str = s;
         entries[idx].id = count++;
@@ -220,11 +202,20 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         }
 
         if (ep_start >= limit) break;
-        const char* ep_end = (const char*)std::memchr(ep_start, ' ', limit - ep_start);
-        if (!ep_end) break;
+        const char* s = ep_start;
+        uint32_t h = 0;
+        while (s < limit && *s != ' ') {
+#if defined(__x86_64__) || defined(_M_X64)
+            h = _mm_crc32_u8(h, (uint8_t)*s++);
+#else
+            h = (h ^ (uint8_t)*s++) * 0x100000001b3ULL;
+#endif
+        }
+        if (s >= limit) break;
+        const char* ep_end = s;
 
         size_t ep_len = ep_end - ep_start;
-        int eid = td.ep_map.get_or_insert(ep_start, ep_len);
+        int eid = td.ep_map.get_or_insert(ep_start, ep_len, h);
         if (eid >= (int)td.endpoints.size()) {
             td.endpoints.emplace_back(ep_start, ep_len);
         }
@@ -237,8 +228,7 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         const char* lat_ptr = status_ptr + 4;
         uint32_t lat = 0;
         while (lat_ptr < limit && *lat_ptr >= '0' && *lat_ptr <= '9') {
-            lat = lat * 10 + (*lat_ptr - '0');
-            lat_ptr++;
+            lat = lat * 10 + (*lat_ptr++ - '0');
         }
 
         td.hour_records[hid].push_back({lat, (uint16_t)((uint16_t)eid | is_err_flag), 0});

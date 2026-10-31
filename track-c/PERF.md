@@ -26,4 +26,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 19 | Parallel chunk split + SIMD quote jumping (BOM check regression on hostile CSV) | run-65735e1c2ad0 | 0.123 | 46 | failure (hash mismatch) |
 | 20 | Restored UTF-8 BOM check on hostile CSV + 64KB direct O(1) 3-letter code lookup table for regions.csv + parallel boundary search | run-db09b1f9805b | 0.117 | 47 | 55.47 |
 | 21 | Reused thread-local all_hashes buffer in Phase 2 deduplication to eliminate per-country allocations | run-388696ebcb91 | 0.117 | 49 | 55.33 |
-| 22 | Direct pointer-subtraction string length + unquoted fast-path integer/cents parsing | pending | pending | pending | pending |
+| 22 | Direct pointer-subtraction string length + unquoted fast-path integer/cents parsing | run-9fa3fe19bcdf | 0.102 | 46 | 57.02 |
