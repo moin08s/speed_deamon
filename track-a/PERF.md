@@ -25,3 +25,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 18 | Single-pass thread-local direct open-addressing hash aggregation | run-c77a9de9ec2e | 0.240 | 61 | 51.71 |
 | 19 | 8-byte bitpacked RawRecord + O(1) HTTP method jump + zero-alloc inlined[4] latency buffer + in-flight hour capacity swap | run-0bc1942149e0 | 0.080 | 40 | 65.19 |
 | 20 | Hardware CRC32 endpoint hashing + 2-cycle integer hour match + branchless newline advance | run-e7193e25faf5 | 0.075 | 40 | 65.68 |
+| 21 | Hardware CRC32 + 2-cycle integer hour match run consistency | run-7e6c56400fb6 | 0.073 | 43 | 65.85 |
