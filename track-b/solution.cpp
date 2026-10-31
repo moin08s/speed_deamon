@@ -81,8 +81,55 @@ inline char to_lower_char(char c) {
     return c;
 }
 
-struct WordRef {
-    int id = -1;
+struct FastTermTable {
+    static constexpr uint32_t CAPACITY = 65536;
+    static constexpr uint32_t MASK = CAPACITY - 1;
+
+    struct Entry {
+        uint64_t hash = 0;
+        uint32_t len = 0;
+        std::string word;
+        int id = -1;
+    };
+
+    std::vector<Entry> table;
+
+    FastTermTable() : table(CAPACITY) {}
+
+    static inline uint64_t hash_bytes(const char* p, size_t len) {
+        uint64_t h = 0xcbf29ce484222325ULL;
+        for (size_t i = 0; i < len; ++i) {
+            h = (h ^ (unsigned char)p[i]) * 0x100000001b3ULL;
+        }
+        return h ? h : 1;
+    }
+
+    void insert(const std::string& word, int id) {
+        uint64_t h = hash_bytes(word.data(), word.size());
+        uint32_t idx = (uint32_t)h & MASK;
+        while (table[idx].hash != 0) {
+            if (table[idx].hash == h && table[idx].len == word.size() && table[idx].word == word) {
+                return;
+            }
+            idx = (idx + 1) & MASK;
+        }
+        table[idx].hash = h;
+        table[idx].len = (uint32_t)word.size();
+        table[idx].word = word;
+        table[idx].id = id;
+    }
+
+    inline int find(const char* p, size_t len) const {
+        uint64_t h = hash_bytes(p, len);
+        uint32_t idx = (uint32_t)h & MASK;
+        while (table[idx].hash != 0) {
+            if (table[idx].hash == h && table[idx].len == len && std::memcmp(table[idx].word.data(), p, len) == 0) {
+                return table[idx].id;
+            }
+            idx = (idx + 1) & MASK;
+        }
+        return -1;
+    }
 };
 
 bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std::string>& terms) {
@@ -94,7 +141,6 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
 
     size_t pos = 0;
     while (pos + len_first <= L) {
-        // Find first term
         bool found = false;
         size_t idx = pos;
         while (idx + len_first <= L) {
@@ -114,13 +160,11 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
 
         if (!found) return false;
 
-        // Word boundary before
         if (idx > 0 && IS_ALNUM[(uint8_t)to_lower_char(text[idx - 1])]) {
             pos = idx + 1;
             continue;
         }
 
-        // Word boundary after
         size_t end_idx = idx + len_first;
         if (end_idx < L && IS_ALNUM[(uint8_t)to_lower_char(text[end_idx])]) {
             pos = idx + 1;
@@ -190,11 +234,14 @@ int main(int argc, char** argv) {
     if (!qf) return 1;
 
     std::unordered_map<std::string, int> term_to_id;
+    FastTermTable fast_terms;
+
     auto get_term_id = [&](const std::string& s) -> int {
         auto it = term_to_id.find(s);
         if (it != term_to_id.end()) return it->second;
         int id = (int)term_to_id.size();
         term_to_id[s] = id;
+        fast_terms.insert(s, id);
         return id;
     };
 
@@ -208,7 +255,6 @@ int main(int argc, char** argv) {
         if (line.rfind("BOOL ", 0) == 0) {
             q.type = QUERY_BOOL;
             const char* p = line.c_str() + 5;
-            // Tokenize BOOL query: term0 [OP1 term1 OP2 term2 ...]
             std::string cur;
             bool is_op = false;
             while (*p) {
@@ -220,7 +266,6 @@ int main(int argc, char** argv) {
                     p++;
                 }
                 if (!is_op) {
-                    // lower term
                     for (char& c : cur) c = to_lower_char(c);
                     q.bool_terms.push_back(get_term_id(cur));
                     is_op = true;
@@ -294,11 +339,9 @@ int main(int argc, char** argv) {
             const char* limit = mf.data + split_points[t + 1];
             auto& t_idx = thread_indices[t];
 
-            std::string tok;
-            tok.reserve(64);
-
             std::vector<int> doc_terms;
             doc_terms.reserve(256);
+            char tok_buf[128];
 
             while (p < limit) {
                 const char* nl = (const char*)memchr(p, '\n', limit - p);
@@ -325,14 +368,20 @@ int main(int argc, char** argv) {
                     while (tp < line_end) {
                         while (tp < line_end && !IS_ALNUM[(uint8_t)to_lower_char(*tp)]) tp++;
                         if (tp >= line_end) break;
-                        tok.clear();
+                        const char* tok_st = tp;
+                        size_t tok_len = 0;
                         while (tp < line_end && IS_ALNUM[(uint8_t)to_lower_char(*tp)]) {
-                            tok.push_back(to_lower_char(*tp));
+                            if (tok_len < sizeof(tok_buf)) {
+                                tok_buf[tok_len] = to_lower_char(*tp);
+                            }
+                            tok_len++;
                             tp++;
                         }
-                        auto it = term_to_id.find(tok);
-                        if (it != term_to_id.end()) {
-                            doc_terms.push_back(it->second);
+                        if (tok_len <= sizeof(tok_buf)) {
+                            int tid = fast_terms.find(tok_buf, tok_len);
+                            if (tid >= 0) {
+                                doc_terms.push_back(tid);
+                            }
                         }
                     }
 
@@ -350,7 +399,6 @@ int main(int argc, char** argv) {
 
     for (auto& th : threads) th.join();
 
-    // Merge postings and doc table
     std::vector<std::vector<uint32_t>> final_postings(num_terms);
     for (size_t term_id = 0; term_id < num_terms; ++term_id) {
         size_t total_size = 0;
@@ -380,10 +428,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Free thread indices
     thread_indices.clear();
 
-    // Evaluate queries in parallel
     size_t total_queries = queries.size();
     std::vector<std::string> query_results(total_queries);
 
