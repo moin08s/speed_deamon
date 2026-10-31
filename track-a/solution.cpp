@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <utility>
-#include <chrono>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -65,11 +64,6 @@ struct MappedFile {
     }
 };
 
-struct LocalGroup {
-    std::vector<uint32_t> latencies;
-    uint32_t errors = 0;
-};
-
 struct FastStringMap {
     static constexpr uint32_t CAPACITY = 8192;
     static constexpr uint32_t MASK = CAPACITY - 1;
@@ -113,21 +107,28 @@ struct FastStringMap {
     }
 };
 
+struct LogEntry {
+    uint32_t key; // (hid << 13) | (eid << 1) | is_err
+    uint32_t lat;
+
+    inline bool operator<(const LogEntry& o) const {
+        return key < o.key;
+    }
+};
+
 struct ThreadData {
     FastStringMap hour_map;
     FastStringMap ep_map;
     std::vector<std::string> hours;
     std::vector<std::string> endpoints;
-    std::vector<LocalGroup> groups;
-    std::vector<uint32_t> active_indices;
+    std::vector<LogEntry> entries;
 };
 
-void parse_chunk_raw(const char* buf, size_t start, size_t end, ThreadData& td) {
+void parse_chunk(const char* buf, size_t start, size_t end, ThreadData& td) {
     const char* p = buf + start;
     const char* limit = buf + end;
 
-    constexpr int MAX_EP = 4096;
-    td.groups.resize(128 * MAX_EP);
+    td.entries.reserve((end - start) / 40);
 
     int last_hid = -1;
     const char* last_hour_ptr = nullptr;
@@ -180,15 +181,14 @@ void parse_chunk_raw(const char* buf, size_t start, size_t end, ThreadData& td) 
             lat_ptr++;
         }
 
-        size_t g_idx = (size_t)hid * MAX_EP + eid;
-        auto& grp = td.groups[g_idx];
-        if (grp.latencies.empty()) td.active_indices.push_back((uint32_t)g_idx);
-        grp.latencies.push_back(lat);
-        if (is_err) grp.errors++;
+        uint32_t key = (uint32_t)((hid << 13) | (eid << 1) | (is_err ? 1 : 0));
+        td.entries.push_back({key, lat});
 
         while (lat_ptr < limit && *lat_ptr != '\n') lat_ptr++;
         p = (lat_ptr < limit) ? lat_ptr + 1 : limit;
     }
+
+    std::sort(td.entries.begin(), td.entries.end());
 }
 
 inline char* fast_u32(char* p, uint32_t val) {
@@ -322,17 +322,17 @@ int main(int argc, char** argv) {
     threads.reserve(num_threads);
 
     for (size_t i = 0; i < num_threads; ++i) {
-        threads.emplace_back(parse_chunk_raw, mf.data, split_points[i], split_points[i+1], std::ref(thread_data[i]));
+        threads.emplace_back(parse_chunk, mf.data, split_points[i], split_points[i+1], std::ref(thread_data[i]));
     }
 
     for (auto& t : threads) {
         t.join();
     }
 
+    // Reconstruct global hour and endpoint maps
     std::vector<OutGroup> out_groups;
     out_groups.reserve(70000);
 
-    constexpr int MAX_EP = 4096;
     struct MergeEntry {
         uint64_t hash = 0;
         int group_idx = -1;
@@ -343,40 +343,47 @@ int main(int argc, char** argv) {
 
     for (size_t t = 0; t < num_threads; ++t) {
         auto& td = thread_data[t];
-        for (uint32_t g_idx : td.active_indices) {
-            auto& grp = td.groups[g_idx];
-            if (!grp.latencies.empty()) {
-                int h = g_idx / MAX_EP;
-                int e = g_idx % MAX_EP;
-                const std::string& hr = td.hours[h];
-                const std::string& ep = td.endpoints[e];
-                uint64_t hsh = FastStringMap::hash_bytes(hr.data(), hr.size());
-                hsh ^= FastStringMap::hash_bytes(ep.data(), ep.size()) + 0x9e3779b97f4a7c15ULL + (hsh << 6) + (hsh >> 2);
-                if (hsh == 0) hsh = 1;
+        const auto& entries = td.entries;
+        size_t n_entries = entries.size();
+        size_t idx = 0;
+        while (idx < n_entries) {
+            uint32_t raw_key = entries[idx].key;
+            uint32_t group_key = raw_key >> 1; // without is_err
+            int hid = group_key >> 12;
+            int eid = group_key & 0xFFF;
 
-                uint32_t s_idx = (uint32_t)hsh & MERGE_MASK;
-                int found_idx = -1;
-                while (merge_table[s_idx].hash != 0) {
-                    if (merge_table[s_idx].hash == hsh) {
-                        int g = merge_table[s_idx].group_idx;
-                        if (out_groups[g].hour == hr && out_groups[g].endpoint == ep) {
-                            found_idx = g;
-                            break;
-                        }
+            const std::string& hr = td.hours[hid];
+            const std::string& ep = td.endpoints[eid];
+
+            uint64_t hsh = FastStringMap::hash_bytes(hr.data(), hr.size());
+            hsh ^= FastStringMap::hash_bytes(ep.data(), ep.size()) + 0x9e3779b97f4a7c15ULL + (hsh << 6) + (hsh >> 2);
+            if (hsh == 0) hsh = 1;
+
+            uint32_t s_idx = (uint32_t)hsh & MERGE_MASK;
+            int found_idx = -1;
+            while (merge_table[s_idx].hash != 0) {
+                if (merge_table[s_idx].hash == hsh) {
+                    int g = merge_table[s_idx].group_idx;
+                    if (out_groups[g].hour == hr && out_groups[g].endpoint == ep) {
+                        found_idx = g;
+                        break;
                     }
-                    s_idx = (s_idx + 1) & MERGE_MASK;
                 }
+                s_idx = (s_idx + 1) & MERGE_MASK;
+            }
 
-                if (found_idx == -1) {
-                    found_idx = (int)out_groups.size();
-                    out_groups.push_back({hr, ep, std::move(grp.latencies), grp.errors});
-                    merge_table[s_idx].hash = hsh;
-                    merge_table[s_idx].group_idx = found_idx;
-                } else {
-                    auto& target = out_groups[found_idx];
-                    target.latencies.insert(target.latencies.end(), grp.latencies.begin(), grp.latencies.end());
-                    target.errors += grp.errors;
-                }
+            if (found_idx == -1) {
+                found_idx = (int)out_groups.size();
+                out_groups.push_back({hr, ep, {}, 0});
+                merge_table[s_idx].hash = hsh;
+                merge_table[s_idx].group_idx = found_idx;
+            }
+
+            auto& target = out_groups[found_idx];
+            while (idx < n_entries && (entries[idx].key >> 1) == group_key) {
+                target.latencies.push_back(entries[idx].lat);
+                if (entries[idx].key & 1) target.errors++;
+                idx++;
             }
         }
     }
@@ -416,7 +423,6 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
-
 
     return 0;
 }
