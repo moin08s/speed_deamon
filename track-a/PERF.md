@@ -29,4 +29,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 22 | O(1) 3-cycle integer hour calculation + static 72-hour schedule | run-8eb86abf6221 | 0.076 | 44 | 65.33 |
 | 23 | Zero-allocation parallel counting reduction by hour with contiguous lat_pool + automatic endpoint sorting elimination | run-8fdfaaababdb | 0.076 | 38 | 65.94 |
 | 24 | Two-pass direct scatter test (two passes over 160MB input file incur redundant I/O) | run-8beba04f5e71 | 0.120 | 28 | 58.94 |
-| 25 | Restored single-pass streaming with contiguous lat_pool reduction | run-8fdfaaababdb | 0.076 | 38 | 65.94 |
+| 25 | Restored single-pass streaming with contiguous lat_pool reduction | run-fc02c9b01c53 | 0.074 | 38 | 66.17 |

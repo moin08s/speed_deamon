@@ -70,6 +70,7 @@ struct MappedFile {
 };
 
 static uint8_t CHAR_MAP[256];
+static uint8_t LOWER_MAP[256];
 static void init_tables() {
     static bool inited = false;
     if (inited) return;
@@ -77,12 +78,15 @@ static void init_tables() {
     for (char c = '0'; c <= '9'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)c;
     for (char c = 'a'; c <= 'z'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)c;
     for (char c = 'A'; c <= 'Z'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)(c + 32);
+    for (int i = 0; i < 256; ++i) {
+        if (i >= 'A' && i <= 'Z') LOWER_MAP[i] = (uint8_t)(i + 32);
+        else LOWER_MAP[i] = (uint8_t)i;
+    }
     inited = true;
 }
 
 inline char to_lower_char(char c) {
-    if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');
-    return c;
+    return (char)LOWER_MAP[(uint8_t)c];
 }
 
 inline char* fast_u32(char* p, uint32_t val) {
@@ -187,14 +191,57 @@ struct FastTermTable {
     }
 };
 
-bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std::string>& terms) {
+#if defined(__AVX2__)
+#include <immintrin.h>
+inline const char* find_char_pair_avx2(const char* p, size_t len, char c1, char c2) {
+    if (len == 0) return nullptr;
+    if (c1 == c2) return (const char*)std::memchr(p, c1, len);
+
+    __m256i vc1 = _mm256_set1_epi8(c1);
+    __m256i vc2 = _mm256_set1_epi8(c2);
+
+    size_t i = 0;
+    while (i + 32 <= len) {
+        __m256i chunk = _mm256_loadu_si256((const __m256i*)(p + i));
+        __m256i m1 = _mm256_cmpeq_epi8(chunk, vc1);
+        __m256i m2 = _mm256_cmpeq_epi8(chunk, vc2);
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(_mm256_or_si256(m1, m2));
+        if (mask != 0) {
+            uint32_t match_idx = __builtin_ctz(mask);
+            return p + i + match_idx;
+        }
+        i += 32;
+    }
+    while (i < len) {
+        if (p[i] == c1 || p[i] == c2) return p + i;
+        i++;
+    }
+    return nullptr;
+}
+#else
+inline const char* find_char_pair_avx2(const char* p, size_t len, char c1, char c2) {
+    if (c1 == c2) return (const char*)std::memchr(p, c1, len);
+    const char* p1 = (const char*)std::memchr(p, c1, len);
+    const char* p2 = (const char*)std::memchr(p, c2, len);
+    if (!p1) return p2;
+    if (!p2) return p1;
+    return std::min(p1, p2);
+}
+#endif
+
+struct TermView {
+    const char* data;
+    uint32_t len;
+};
+
+bool match_phrase_fast(const char* text, size_t text_len, const std::vector<TermView>& terms) {
     if (terms.empty()) return false;
     size_t L = text_len;
-    const std::string& first = terms[0];
-    size_t len_first = first.size();
+    const TermView& first = terms[0];
+    size_t len_first = first.len;
     if (len_first > L) return false;
 
-    char c0_low = first[0];
+    char c0_low = first.data[0];
     char c0_up = (c0_low >= 'a' && c0_low <= 'z') ? (char)(c0_low - ('a' - 'A')) : c0_low;
 
     size_t pos = 0;
@@ -202,30 +249,9 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
         size_t rem = L - pos;
         if (rem < len_first) return false;
         size_t scan_len = rem - len_first + 1;
-        const char* p_match = nullptr;
-        if (c0_low == c0_up) {
-            p_match = (const char*)std::memchr(text + pos, c0_low, scan_len);
-        } else {
-            const char* p1 = (const char*)std::memchr(text + pos, c0_low, scan_len);
-            const char* p2 = (const char*)std::memchr(text + pos, c0_up, scan_len);
-            if (!p1) p_match = p2;
-            else if (!p2) p_match = p1;
-            else p_match = std::min(p1, p2);
-        }
+        const char* p_match = find_char_pair_avx2(text + pos, scan_len, c0_low, c0_up);
         if (!p_match) return false;
         size_t idx = p_match - text;
-
-        bool eq = true;
-        for (size_t k = 1; k < len_first; ++k) {
-            if (to_lower_char(text[idx + k]) != first[k]) {
-                eq = false;
-                break;
-            }
-        }
-        if (!eq) {
-            pos = idx + 1;
-            continue;
-        }
 
         if (idx > 0 && CHAR_MAP[(uint8_t)text[idx - 1]]) {
             pos = idx + 1;
@@ -238,12 +264,24 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
             continue;
         }
 
+        bool eq = true;
+        for (size_t k = 1; k < len_first; ++k) {
+            if (to_lower_char(text[idx + k]) != first.data[k]) {
+                eq = false;
+                break;
+            }
+        }
+        if (!eq) {
+            pos = idx + 1;
+            continue;
+        }
+
         size_t cur_pos = end_idx;
         bool matched_all = true;
 
         for (size_t t = 1; t < terms.size(); ++t) {
-            const std::string& term = terms[t];
-            size_t len_t = term.size();
+            const TermView& term = terms[t];
+            size_t len_t = term.len;
 
             while (cur_pos < L && CHAR_MAP[(uint8_t)text[cur_pos]] == 0) {
                 cur_pos++;
@@ -252,19 +290,19 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
                 matched_all = false;
                 break;
             }
+            size_t after_t = cur_pos + len_t;
+            if (after_t < L && CHAR_MAP[(uint8_t)text[after_t]]) {
+                matched_all = false;
+                break;
+            }
             bool eq_t = true;
             for (size_t k = 0; k < len_t; ++k) {
-                if (to_lower_char(text[cur_pos + k]) != term[k]) {
+                if (to_lower_char(text[cur_pos + k]) != term.data[k]) {
                     eq_t = false;
                     break;
                 }
             }
             if (!eq_t) {
-                matched_all = false;
-                break;
-            }
-            size_t after_t = cur_pos + len_t;
-            if (after_t < L && CHAR_MAP[(uint8_t)text[after_t]]) {
                 matched_all = false;
                 break;
             }
@@ -358,7 +396,7 @@ struct Query {
     std::vector<int> bool_terms;
     std::vector<BoolOp> bool_ops;
     std::vector<int> phrase_term_ids;
-    std::vector<std::string> phrase_terms;
+    std::vector<TermView> phrase_terms;
 };
 
 int main(int argc, char** argv) {
@@ -429,12 +467,8 @@ int main(int argc, char** argv) {
                 while (p < q_line_end && CHAR_MAP[(uint8_t)*p]) p++;
                 size_t w_len = p - w_start;
 
-                std::string cur;
-                cur.reserve(w_len);
-                for (size_t i = 0; i < w_len; ++i) cur.push_back((char)CHAR_MAP[(uint8_t)w_start[i]]);
-
                 q.phrase_term_ids.push_back(term_table.insert(w_start, w_len));
-                q.phrase_terms.push_back(std::move(cur));
+                q.phrase_terms.push_back({w_start, (uint32_t)w_len});
             }
         }
         queries.push_back(std::move(q));
@@ -561,61 +595,47 @@ int main(int argc, char** argv) {
     uint32_t total_postings = term_offsets[num_terms];
     std::vector<uint32_t> postings_data(total_postings);
 
-    // Pass 2: Directly scatter into postings_data from memory-mapped file
+    // Pass 2: Directly scatter into postings_data using doc list from Pass 1
     threads.clear();
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
-            const char* p = mf.data + split_points[t];
-            const char* limit = mf.data + split_points[t + 1];
             auto& starts = thread_start[t];
+            const auto& my_docs = thread_indices[t].docs;
 
             std::vector<uint32_t> term_seen(num_terms, 0);
             uint32_t cur_epoch = 1;
 
-            while (p < limit) {
-                const char* nl = (const char*)memchr(p, '\n', limit - p);
-                const char* line_end = nl ? nl : limit;
-                if (line_end > p && *(line_end - 1) == '\r') line_end--;
+            for (const auto& d : my_docs) {
+                uint32_t doc_id = d.doc_id;
+                const char* tp = mf.data + d.offset;
+                const char* line_end = tp + d.len;
 
-                const char* tab = (const char*)memchr(p, '\t', line_end - p);
-                if (tab) {
-                    uint32_t doc_id = 0;
-                    const char* cur = p;
-                    while (cur < tab && *cur >= '0' && *cur <= '9') {
-                        doc_id = doc_id * 10 + (*cur - '0');
-                        cur++;
-                    }
-
-                    const char* text_start = tab + 1;
-                    if (cur_epoch == 0xFFFFFFF0) {
-                        std::fill(term_seen.begin(), term_seen.end(), 0);
-                        cur_epoch = 1;
-                    }
-                    const char* tp = text_start;
-                    while (tp < line_end) {
-                        while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
-                        if (tp >= line_end) break;
-                        const char* w_start = tp;
-                        uint64_t h = 0xcbf29ce484222325ULL;
-                        while (tp < line_end) {
-                            uint8_t ch = CHAR_MAP[(uint8_t)*tp];
-                            if (ch == 0) break;
-                            h = (h ^ ch) * 0x100000001b3ULL;
-                            tp++;
-                        }
-                        size_t w_len = tp - w_start;
-                        int term_id = term_table.find(w_start, w_len, h);
-                        if (term_id != -1) {
-                            if (term_seen[term_id] != cur_epoch) {
-                                term_seen[term_id] = cur_epoch;
-                                uint32_t slot = starts[term_id]++;
-                                postings_data[slot] = doc_id;
-                            }
-                        }
-                    }
-                    cur_epoch++;
+                if (cur_epoch == 0xFFFFFFF0) {
+                    std::fill(term_seen.begin(), term_seen.end(), 0);
+                    cur_epoch = 1;
                 }
-                p = nl ? nl + 1 : limit;
+                while (tp < line_end) {
+                    while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
+                    if (tp >= line_end) break;
+                    const char* w_start = tp;
+                    uint64_t h = 0xcbf29ce484222325ULL;
+                    while (tp < line_end) {
+                        uint8_t ch = CHAR_MAP[(uint8_t)*tp];
+                        if (ch == 0) break;
+                        h = (h ^ ch) * 0x100000001b3ULL;
+                        tp++;
+                    }
+                    size_t w_len = tp - w_start;
+                    int term_id = term_table.find(w_start, w_len, h);
+                    if (term_id != -1) {
+                        if (term_seen[term_id] != cur_epoch) {
+                            term_seen[term_id] = cur_epoch;
+                            uint32_t slot = starts[term_id]++;
+                            postings_data[slot] = doc_id;
+                        }
+                    }
+                }
+                cur_epoch++;
             }
         });
     }
@@ -675,89 +695,145 @@ int main(int argc, char** argv) {
                 cur_res.clear();
 
                 if (q.type == QUERY_BOOL) {
-                    if (!q.bool_terms.empty()) {
-                        bool all_and = true;
-                        for (BoolOp op : q.bool_ops) {
-                            if (op != OP_AND) { all_and = false; break; }
+                    if (q.bool_terms.empty()) {
+                        out_str.append("0 0\n", 4);
+                        continue;
+                    }
+                    if (q.bool_terms.size() == 1) {
+                        auto [ptr0, len0] = get_postings(q.bool_terms[0]);
+                        if (len0 == 0) {
+                            out_str.append("0 0\n", 4);
+                        } else {
+                            uint64_t sum = 0;
+                            for (size_t i = 0; i < len0; ++i) sum += ptr0[i];
+                            size_t m = std::min((size_t)10, len0);
+                            char* p = line_buf;
+                            p = fast_u64(p, len0);
+                            *p++ = ' ';
+                            p = fast_u64(p, sum);
+                            for (size_t i = 0; i < m; ++i) {
+                                *p++ = ' ';
+                                p = fast_u32(p, ptr0[i]);
+                            }
+                            *p++ = '\n';
+                            out_str.append(line_buf, p - line_buf);
+                        }
+                        continue;
+                    }
+
+                    bool all_and = true;
+                    for (BoolOp op : q.bool_ops) {
+                        if (op != OP_AND) { all_and = false; break; }
+                    }
+
+                    if (all_and) {
+                        size_t num_bt = q.bool_terms.size();
+                        int sorted_terms[16];
+                        for (size_t i = 0; i < num_bt; ++i) sorted_terms[i] = q.bool_terms[i];
+                        std::sort(sorted_terms, sorted_terms + num_bt, [&](int a, int b) {
+                            auto [pa, la] = get_postings(a);
+                            auto [pb, lb] = get_postings(b);
+                            return la < lb;
+                        });
+
+                        auto [ptr0, len0] = get_postings(sorted_terms[0]);
+                        auto [ptr1, len1] = get_postings(sorted_terms[1]);
+                        if (len0 == 0 || len1 == 0) {
+                            out_str.append("0 0\n", 4);
+                            continue;
+                        }
+                        intersect_slices(ptr0, len0, ptr1, len1, cur_res);
+                        for (size_t k = 2; k < num_bt; ++k) {
+                            if (cur_res.empty()) break;
+                            auto [ptr_k, len_k] = get_postings(sorted_terms[k]);
+                            if (len_k == 0) { cur_res.clear(); break; }
+                            intersect_slices(cur_res.data(), cur_res.size(), ptr_k, len_k, temp);
+                            cur_res.swap(temp);
+                        }
+                    } else {
+                        auto [ptr0, len0] = get_postings(q.bool_terms[0]);
+                        if (len0 > 0) {
+                            cur_res.assign(ptr0, ptr0 + len0);
                         }
 
-                        if (all_and && q.bool_terms.size() > 1) {
-                            std::vector<int> sorted_terms = q.bool_terms;
-                            std::sort(sorted_terms.begin(), sorted_terms.end(), [&](int a, int b) {
-                                auto [pa, la] = get_postings(a);
-                                auto [pb, lb] = get_postings(b);
-                                return la < lb;
-                            });
+                        for (size_t op_i = 0; op_i < q.bool_ops.size(); ++op_i) {
+                            BoolOp op = q.bool_ops[op_i];
+                            auto [ptr_rhs, len_rhs] = get_postings(q.bool_terms[op_i + 1]);
 
-                            auto [ptr0, len0] = get_postings(sorted_terms[0]);
-                            auto [ptr1, len1] = get_postings(sorted_terms[1]);
-                            if (len0 == 0 || len1 == 0) {
-                                cur_res.clear();
-                            } else {
-                                intersect_slices(ptr0, len0, ptr1, len1, cur_res);
-                                for (size_t k = 2; k < sorted_terms.size(); ++k) {
-                                    if (cur_res.empty()) break;
-                                    auto [ptr_k, len_k] = get_postings(sorted_terms[k]);
-                                    if (len_k == 0) { cur_res.clear(); break; }
-                                    intersect_slices(cur_res.data(), cur_res.size(), ptr_k, len_k, temp);
+                            if (op == OP_AND) {
+                                if (len_rhs == 0 || cur_res.empty()) {
+                                    cur_res.clear();
+                                } else {
+                                    intersect_slices(cur_res.data(), cur_res.size(), ptr_rhs, len_rhs, temp);
                                     cur_res.swap(temp);
                                 }
-                            }
-                        } else {
-                            auto [ptr0, len0] = get_postings(q.bool_terms[0]);
-                            if (len0 > 0) {
-                                cur_res.assign(ptr0, ptr0 + len0);
-                            }
-
-                            for (size_t op_i = 0; op_i < q.bool_ops.size(); ++op_i) {
-                                BoolOp op = q.bool_ops[op_i];
-                                auto [ptr_rhs, len_rhs] = get_postings(q.bool_terms[op_i + 1]);
-
-                                if (op == OP_AND) {
-                                    if (len_rhs == 0 || cur_res.empty()) {
-                                        cur_res.clear();
+                            } else if (op == OP_OR) {
+                                if (len_rhs > 0) {
+                                    if (cur_res.empty()) {
+                                        cur_res.assign(ptr_rhs, ptr_rhs + len_rhs);
                                     } else {
-                                        intersect_slices(cur_res.data(), cur_res.size(), ptr_rhs, len_rhs, temp);
+                                        temp.clear();
+                                        std::set_union(cur_res.begin(), cur_res.end(),
+                                                       ptr_rhs, ptr_rhs + len_rhs,
+                                                       std::back_inserter(temp));
                                         cur_res.swap(temp);
                                     }
-                                } else if (op == OP_OR) {
-                                    if (len_rhs > 0) {
-                                        if (cur_res.empty()) {
-                                            cur_res.assign(ptr_rhs, ptr_rhs + len_rhs);
-                                        } else {
-                                            temp.clear();
-                                            std::set_union(cur_res.begin(), cur_res.end(),
-                                                           ptr_rhs, ptr_rhs + len_rhs,
-                                                           std::back_inserter(temp));
-                                            cur_res.swap(temp);
-                                        }
-                                    }
-                                } else if (op == OP_NOT) {
-                                    if (len_rhs > 0 && !cur_res.empty()) {
-                                        difference_adaptive(cur_res, ptr_rhs, len_rhs, temp);
-                                        cur_res.swap(temp);
-                                    }
+                                }
+                            } else if (op == OP_NOT) {
+                                if (len_rhs > 0 && !cur_res.empty()) {
+                                    difference_adaptive(cur_res, ptr_rhs, len_rhs, temp);
+                                    cur_res.swap(temp);
                                 }
                             }
                         }
                     }
                 } else if (q.type == QUERY_PHRASE) {
-                    if (!q.phrase_term_ids.empty()) {
-                        size_t min_idx = 0;
-                        size_t min_len = (size_t)-1;
-                        for (size_t k = 0; k < q.phrase_term_ids.size(); ++k) {
-                            auto [p, len] = get_postings(q.phrase_term_ids[k]);
-                            if (len < min_len) {
-                                min_len = len;
-                                min_idx = k;
+                    if (q.phrase_term_ids.empty()) {
+                        out_str.append("0 0\n", 4);
+                        continue;
+                    }
+                    size_t num_pt = q.phrase_term_ids.size();
+                    int sorted_pterms[16];
+                    for (size_t i = 0; i < num_pt; ++i) sorted_pterms[i] = q.phrase_term_ids[i];
+                    std::sort(sorted_pterms, sorted_pterms + num_pt, [&](int a, int b) {
+                        auto [pa, la] = get_postings(a);
+                        auto [pb, lb] = get_postings(b);
+                        return la < lb;
+                    });
+
+                    auto [ptr0, len0] = get_postings(sorted_pterms[0]);
+                    if (len0 == 0) {
+                        out_str.append("0 0\n", 4);
+                        continue;
+                    }
+
+                    if (num_pt == 1) {
+                        temp.clear();
+                        for (size_t di = 0; di < len0; ++di) {
+                            uint32_t doc_id = ptr0[di];
+                            uint32_t off = doc_offsets[doc_id];
+                            uint32_t ln = doc_lens[doc_id];
+                            if (match_phrase_fast(mf.data + off, ln, q.phrase_terms)) {
+                                temp.push_back(doc_id);
                             }
                         }
+                        cur_res.swap(temp);
+                    } else {
+                        auto [ptr1, len1] = get_postings(sorted_pterms[1]);
+                        if (len1 == 0) {
+                            out_str.append("0 0\n", 4);
+                            continue;
+                        }
+                        intersect_slices(ptr0, len0, ptr1, len1, cur_res);
+                        for (size_t k = 2; k < num_pt; ++k) {
+                            if (cur_res.empty()) break;
+                            auto [ptr_k, len_k] = get_postings(sorted_pterms[k]);
+                            if (len_k == 0) { cur_res.clear(); break; }
+                            intersect_slices(cur_res.data(), cur_res.size(), ptr_k, len_k, temp);
+                            cur_res.swap(temp);
+                        }
 
-                        if (min_len == 0) {
-                            cur_res.clear();
-                        } else if (q.phrase_term_ids.size() == 1) {
-                            auto [ptr_min, len_min] = get_postings(q.phrase_term_ids[min_idx]);
-                            cur_res.assign(ptr_min, ptr_min + len_min);
+                        if (!cur_res.empty()) {
                             temp.clear();
                             for (uint32_t doc_id : cur_res) {
                                 uint32_t off = doc_offsets[doc_id];
@@ -767,44 +843,6 @@ int main(int argc, char** argv) {
                                 }
                             }
                             cur_res.swap(temp);
-                        } else {
-                            size_t sec_idx = (min_idx == 0) ? 1 : 0;
-                            size_t sec_len = (size_t)-1;
-                            for (size_t k = 0; k < q.phrase_term_ids.size(); ++k) {
-                                if (k == min_idx) continue;
-                                auto [p, len] = get_postings(q.phrase_term_ids[k]);
-                                if (len < sec_len) {
-                                    sec_len = len;
-                                    sec_idx = k;
-                                }
-                            }
-                            auto [ptr_min, len_min] = get_postings(q.phrase_term_ids[min_idx]);
-                            auto [ptr_sec, len_sec] = get_postings(q.phrase_term_ids[sec_idx]);
-                            if (len_sec == 0) {
-                                cur_res.clear();
-                            } else {
-                                intersect_slices(ptr_min, len_min, ptr_sec, len_sec, cur_res);
-                                for (size_t k = 0; k < q.phrase_term_ids.size(); ++k) {
-                                    if (k == min_idx || k == sec_idx) continue;
-                                    if (cur_res.empty()) break;
-                                    auto [ptr_k, len_k] = get_postings(q.phrase_term_ids[k]);
-                                    if (len_k == 0) { cur_res.clear(); break; }
-                                    intersect_slices(cur_res.data(), cur_res.size(), ptr_k, len_k, temp);
-                                    cur_res.swap(temp);
-                                }
-
-                                if (!cur_res.empty()) {
-                                    temp.clear();
-                                    for (uint32_t doc_id : cur_res) {
-                                        uint32_t off = doc_offsets[doc_id];
-                                        uint32_t ln = doc_lens[doc_id];
-                                        if (match_phrase_fast(mf.data + off, ln, q.phrase_terms)) {
-                                            temp.push_back(doc_id);
-                                        }
-                                    }
-                                    cur_res.swap(temp);
-                                }
-                            }
                         }
                     }
                 }
