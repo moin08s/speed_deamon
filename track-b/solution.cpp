@@ -357,19 +357,19 @@ inline void intersect_adaptive(const std::vector<T>& small, const T* big, size_t
 }
 
 template <typename T>
-inline void difference_adaptive(const std::vector<T>& left, const T* right, size_t right_len, std::vector<T>& out) {
+inline void difference_slices(const T* left, size_t left_len, const T* right, size_t right_len, std::vector<T>& out) {
     out.clear();
-    if (left.empty()) return;
+    if (left_len == 0) return;
     if (right_len == 0) {
-        out = left;
+        out.assign(left, left + left_len);
         return;
     }
-    
-    if (right_len > (left.size() << 3)) {
-        out.reserve(left.size());
+    out.reserve(left_len);
+    if (right_len > (left_len << 3)) {
         const T* right_end = right + right_len;
         const T* cur = right;
-        for (T x : left) {
+        for (size_t i = 0; i < left_len; ++i) {
+            T x = left[i];
             if (cur < right_end && *cur < x) {
                 size_t step = 1;
                 while (cur + step < right_end && *(cur + step) < x) {
@@ -384,11 +384,39 @@ inline void difference_adaptive(const std::vector<T>& left, const T* right, size
             }
         }
     } else {
-        out.reserve(left.size());
-        std::set_difference(left.begin(), left.end(),
-                            right, right + right_len,
-                            std::back_inserter(out));
+        std::set_difference(left, left + left_len, right, right + right_len, std::back_inserter(out));
     }
+}
+
+template <typename T>
+inline void difference_adaptive(const std::vector<T>& left, const T* right, size_t right_len, std::vector<T>& out) {
+    difference_slices(left.data(), left.size(), right, right_len, out);
+}
+
+template <typename T>
+inline void union_slices(const T* a, size_t a_len, const T* b, size_t b_len, std::vector<T>& out) {
+    out.clear();
+    if (a_len == 0 && b_len == 0) return;
+    if (a_len == 0) { out.assign(b, b + b_len); return; }
+    if (b_len == 0) { out.assign(a, a + a_len); return; }
+    out.reserve(a_len + b_len);
+    std::set_union(a, a + a_len, b, b + b_len, std::back_inserter(out));
+}
+
+inline void format_postings_direct(std::string& out_str, char* line_buf, const uint32_t* ptr, size_t len) {
+    uint64_t sum = 0;
+    for (size_t i = 0; i < len; ++i) sum += ptr[i];
+    size_t m = std::min((size_t)10, len);
+    char* p = line_buf;
+    p = fast_u64(p, len);
+    *p++ = ' ';
+    p = fast_u64(p, sum);
+    for (size_t i = 0; i < m; ++i) {
+        *p++ = ' ';
+        p = fast_u32(p, ptr[i]);
+    }
+    *p++ = '\n';
+    out_str.append(line_buf, p - line_buf);
 }
 
 struct Query {
@@ -704,19 +732,44 @@ int main(int argc, char** argv) {
                         if (len0 == 0) {
                             out_str.append("0 0\n", 4);
                         } else {
-                            uint64_t sum = 0;
-                            for (size_t i = 0; i < len0; ++i) sum += ptr0[i];
-                            size_t m = std::min((size_t)10, len0);
-                            char* p = line_buf;
-                            p = fast_u64(p, len0);
-                            *p++ = ' ';
-                            p = fast_u64(p, sum);
-                            for (size_t i = 0; i < m; ++i) {
-                                *p++ = ' ';
-                                p = fast_u32(p, ptr0[i]);
+                            format_postings_direct(out_str, line_buf, ptr0, len0);
+                        }
+                        continue;
+                    }
+
+                    if (q.bool_terms.size() == 2) {
+                        auto [ptr0, len0] = get_postings(q.bool_terms[0]);
+                        auto [ptr1, len1] = get_postings(q.bool_terms[1]);
+                        BoolOp op = q.bool_ops[0];
+                        if (op == OP_AND) {
+                            if (len0 == 0 || len1 == 0) {
+                                out_str.append("0 0\n", 4);
+                            } else {
+                                intersect_slices(ptr0, len0, ptr1, len1, cur_res);
+                                if (cur_res.empty()) out_str.append("0 0\n", 4);
+                                else format_postings_direct(out_str, line_buf, cur_res.data(), cur_res.size());
                             }
-                            *p++ = '\n';
-                            out_str.append(line_buf, p - line_buf);
+                        } else if (op == OP_OR) {
+                            if (len0 == 0 && len1 == 0) {
+                                out_str.append("0 0\n", 4);
+                            } else if (len0 == 0) {
+                                format_postings_direct(out_str, line_buf, ptr1, len1);
+                            } else if (len1 == 0) {
+                                format_postings_direct(out_str, line_buf, ptr0, len0);
+                            } else {
+                                union_slices(ptr0, len0, ptr1, len1, cur_res);
+                                format_postings_direct(out_str, line_buf, cur_res.data(), cur_res.size());
+                            }
+                        } else if (op == OP_NOT) {
+                            if (len0 == 0) {
+                                out_str.append("0 0\n", 4);
+                            } else if (len1 == 0) {
+                                format_postings_direct(out_str, line_buf, ptr0, len0);
+                            } else {
+                                difference_slices(ptr0, len0, ptr1, len1, cur_res);
+                                if (cur_res.empty()) out_str.append("0 0\n", 4);
+                                else format_postings_direct(out_str, line_buf, cur_res.data(), cur_res.size());
+                            }
                         }
                         continue;
                     }
@@ -772,16 +825,13 @@ int main(int argc, char** argv) {
                                     if (cur_res.empty()) {
                                         cur_res.assign(ptr_rhs, ptr_rhs + len_rhs);
                                     } else {
-                                        temp.clear();
-                                        std::set_union(cur_res.begin(), cur_res.end(),
-                                                       ptr_rhs, ptr_rhs + len_rhs,
-                                                       std::back_inserter(temp));
+                                        union_slices(cur_res.data(), cur_res.size(), ptr_rhs, len_rhs, temp);
                                         cur_res.swap(temp);
                                     }
                                 }
                             } else if (op == OP_NOT) {
                                 if (len_rhs > 0 && !cur_res.empty()) {
-                                    difference_adaptive(cur_res, ptr_rhs, len_rhs, temp);
+                                    difference_slices(cur_res.data(), cur_res.size(), ptr_rhs, len_rhs, temp);
                                     cur_res.swap(temp);
                                 }
                             }
@@ -850,21 +900,7 @@ int main(int argc, char** argv) {
                 if (cur_res.empty()) {
                     out_str.append("0 0\n", 4);
                 } else {
-                    size_t cnt = cur_res.size();
-                    uint64_t sum = 0;
-                    for (uint32_t d : cur_res) sum += d;
-                    size_t m = std::min((size_t)10, cnt);
-
-                    char* p = line_buf;
-                    p = fast_u64(p, cnt);
-                    *p++ = ' ';
-                    p = fast_u64(p, sum);
-                    for (size_t i = 0; i < m; ++i) {
-                        *p++ = ' ';
-                        p = fast_u32(p, cur_res[i]);
-                    }
-                    *p++ = '\n';
-                    out_str.append(line_buf, p - line_buf);
+                    format_postings_direct(out_str, line_buf, cur_res.data(), cur_res.size());
                 }
             }
         });

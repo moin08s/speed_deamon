@@ -29,3 +29,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 22 | Adaptive galloping binary search for skewed set intersections and differences (`len_big > 8 * len_small`) | run-bd78a42dea7b | 0.733 | 140 | 51.09 |
 | 23 | Symmetric adaptive galloping search (intersect_slices) + 2-term direct intersection without initial copy + immediate docs.txt madvise DONTNEED page cache eviction | run-5063e7bed17f | 0.701 | 144 | 51.12 |
 | 24 | AVX2 SIMD simultaneous char-pair phrase candidate search + zero-allocation TermView queries + 1-term BOOL fast path + doc-list Pass 2 scatter | run-7c85aec550b9 | 0.609 | 149 | 52.59 |
+| 25 | 2-term Boolean direct zero-copy evaluation + difference_slices/union_slices zero-reallocation operations + unified format_postings_direct | pending | | | |
