@@ -28,4 +28,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 21 | Hardware CRC32 + 2-cycle integer hour match run consistency | run-7e6c56400fb6 | 0.073 | 43 | 65.85 |
 | 22 | O(1) 3-cycle integer hour calculation + static 72-hour schedule | run-8eb86abf6221 | 0.076 | 44 | 65.33 |
 | 23 | Zero-allocation parallel counting reduction by hour with contiguous lat_pool + automatic endpoint sorting elimination | run-8fdfaaababdb | 0.076 | 38 | 65.94 |
-| 24 | Two-pass direct scatter into flat contiguous 12.4 MB lat_pool + zero intermediate vectors + immediate page cache drop | pending | pending | pending | pending |
+| 24 | Two-pass direct scatter test (two passes over 160MB input file incur redundant I/O) | run-8beba04f5e71 | 0.120 | 28 | 58.94 |
+| 25 | Restored single-pass streaming with contiguous lat_pool reduction | run-8fdfaaababdb | 0.076 | 38 | 65.94 |
