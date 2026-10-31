@@ -20,4 +20,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 13 | mallopt M_ARENA_MAX=2 to eliminate arena contention + 8-worker thread topology | run-47b1dbc5fca1 | 1.06 | 308 | 43.35 |
 | 14 | 6-worker P-core topology evaluation | run-cef8232fac01 | 1.415 | 254 | 41.05 |
 | 15 | 12-thread parallel query batching test | run-acda972f62e2 | 1.079 | 437 | 41.85 |
-| 16 | Restored optimal 8-worker thread topology (M=308MB balance) | pending | pending | pending | pending |
+| 16 | Restored optimal 8-worker thread topology (M=308MB balance) | run-5d9c2c0b5ebd | 1.07 | 308 | 43.22 |
+| 17 | 32-bit compact distances + 64-bit packed heap elements + 6 P-core workers + single-arena allocation | pending | pending | pending | pending |

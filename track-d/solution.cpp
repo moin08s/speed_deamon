@@ -59,19 +59,22 @@ struct MappedFile {
         if (hMap) { CloseHandle(hMap); hMap = NULL; }
         if (hFile != INVALID_HANDLE_VALUE) { CloseHandle(hFile); hFile = INVALID_HANDLE_VALUE; }
 #else
-        if (data && data != MAP_FAILED) { munmap((void*)data, size); data = nullptr; }
-        if (fd >= 0) { ::close(fd); fd = -1; }
+        if (data && data != MAP_FAILED) {
+            munmap((void*)data, size);
+            data = nullptr;
+        }
+        if (fd >= 0) {
+            ::close(fd);
+            fd = -1;
+        }
 #endif
-        size = 0;
     }
 
-    ~MappedFile() {
-        close();
-    }
+    ~MappedFile() { close(); }
 };
 
 inline uint32_t parse_uint(const char*& p, const char* limit) {
-    while (p < limit && (*p == ' ' || *p == '\r' || *p == '\n')) p++;
+    while (p < limit && (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t')) p++;
     uint32_t val = 0;
     while (p < limit && *p >= '0' && *p <= '9') {
         val = val * 10 + (*p - '0');
@@ -83,13 +86,14 @@ inline uint32_t parse_uint(const char*& p, const char* limit) {
 inline char* fast_i64(char* p, int64_t val) {
     if (val < 0) {
         *p++ = '-';
-        val = -val;
+        *p++ = '1';
+        return p;
     }
     if (val == 0) {
         *p++ = '0';
         return p;
     }
-    char buf[24];
+    char buf[20];
     int len = 0;
     while (val > 0) {
         buf[len++] = '0' + (val % 10);
@@ -168,19 +172,27 @@ void load_graph(const char* path, CSRGraph& g) {
     mf.close(); // Unmap graph.txt immediately
 }
 
-using Element = std::pair<uint64_t, uint32_t>; // (distance, node)
+inline uint64_t pack_elem(uint32_t d, uint32_t u) {
+    return ((uint64_t)d << 32) | u;
+}
+inline uint32_t unpack_d(uint64_t elem) {
+    return (uint32_t)(elem >> 32);
+}
+inline uint32_t unpack_u(uint64_t elem) {
+    return (uint32_t)(elem & 0xFFFFFFFF);
+}
 
 struct WorkerState {
-    std::vector<uint64_t> dist_f;
-    std::vector<uint64_t> dist_b;
+    std::vector<uint32_t> dist_f;
+    std::vector<uint32_t> dist_b;
     std::vector<uint32_t> touched_f;
     std::vector<uint32_t> touched_b;
-    std::vector<Element> hf;
-    std::vector<Element> hb;
+    std::vector<uint64_t> hf;
+    std::vector<uint64_t> hb;
 
     void init(size_t n) {
-        dist_f.assign(n, UINT64_MAX);
-        dist_b.assign(n, UINT64_MAX);
+        dist_f.assign(n, UINT32_MAX);
+        dist_b.assign(n, UINT32_MAX);
         touched_f.reserve(4096);
         touched_b.reserve(4096);
         hf.reserve(4096);
@@ -201,77 +213,81 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
     ws.hf.clear();
     ws.hb.clear();
 
-    ws.hf.push_back({0, s});
-    ws.hb.push_back({0, t});
+    ws.hf.push_back(pack_elem(0, s));
+    ws.hb.push_back(pack_elem(0, t));
 
-    uint64_t best = UINT64_MAX;
+    uint32_t best = UINT32_MAX;
 
     while (!ws.hf.empty() && !ws.hb.empty()) {
-        if (ws.hf.front().first + ws.hb.front().first >= best) {
+        if (unpack_d(ws.hf.front()) + unpack_d(ws.hb.front()) >= best) {
             break;
         }
 
         if (ws.hf.size() <= ws.hb.size()) {
-            std::pop_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
-            auto [d, u] = ws.hf.back();
+            std::pop_heap(ws.hf.begin(), ws.hf.end(), std::greater<uint64_t>());
+            uint64_t top = ws.hf.back();
             ws.hf.pop_back();
+            uint32_t d = unpack_d(top);
+            uint32_t u = unpack_u(top);
 
             if (d > ws.dist_f[u] || d >= best) continue;
 
             uint32_t st = g.fwd_head[u];
             uint32_t en = g.fwd_head[u + 1];
             for (uint32_t i = st; i < en; ++i) {
-                uint64_t nd = d + g.fwd_w[i];
+                uint32_t nd = d + g.fwd_w[i];
                 if (nd < best) {
                     uint32_t v = g.fwd_dst[i];
-                    if (ws.dist_f[v] == UINT64_MAX) {
+                    if (ws.dist_f[v] == UINT32_MAX) {
                         ws.touched_f.push_back(v);
                         ws.dist_f[v] = nd;
-                        ws.hf.push_back({nd, v});
-                        std::push_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
-                        if (ws.dist_b[v] != UINT64_MAX) {
-                            uint64_t cand = nd + ws.dist_b[v];
+                        ws.hf.push_back(pack_elem(nd, v));
+                        std::push_heap(ws.hf.begin(), ws.hf.end(), std::greater<uint64_t>());
+                        if (ws.dist_b[v] != UINT32_MAX) {
+                            uint32_t cand = nd + ws.dist_b[v];
                             if (cand < best) best = cand;
                         }
                     } else if (nd < ws.dist_f[v]) {
                         ws.dist_f[v] = nd;
-                        ws.hf.push_back({nd, v});
-                        std::push_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
-                        if (ws.dist_b[v] != UINT64_MAX) {
-                            uint64_t cand = nd + ws.dist_b[v];
+                        ws.hf.push_back(pack_elem(nd, v));
+                        std::push_heap(ws.hf.begin(), ws.hf.end(), std::greater<uint64_t>());
+                        if (ws.dist_b[v] != UINT32_MAX) {
+                            uint32_t cand = nd + ws.dist_b[v];
                             if (cand < best) best = cand;
                         }
                     }
                 }
             }
         } else {
-            std::pop_heap(ws.hb.begin(), ws.hb.end(), std::greater<Element>());
-            auto [d, u] = ws.hb.back();
+            std::pop_heap(ws.hb.begin(), ws.hb.end(), std::greater<uint64_t>());
+            uint64_t top = ws.hb.back();
             ws.hb.pop_back();
+            uint32_t d = unpack_d(top);
+            uint32_t u = unpack_u(top);
 
             if (d > ws.dist_b[u] || d >= best) continue;
 
             uint32_t st = g.bwd_head[u];
             uint32_t en = g.bwd_head[u + 1];
             for (uint32_t i = st; i < en; ++i) {
-                uint64_t nd = d + g.bwd_w[i];
+                uint32_t nd = d + g.bwd_w[i];
                 if (nd < best) {
                     uint32_t v = g.bwd_dst[i];
-                    if (ws.dist_b[v] == UINT64_MAX) {
+                    if (ws.dist_b[v] == UINT32_MAX) {
                         ws.touched_b.push_back(v);
                         ws.dist_b[v] = nd;
-                        ws.hb.push_back({nd, v});
-                        std::push_heap(ws.hb.begin(), ws.hb.end(), std::greater<Element>());
-                        if (ws.dist_f[v] != UINT64_MAX) {
-                            uint64_t cand = nd + ws.dist_f[v];
+                        ws.hb.push_back(pack_elem(nd, v));
+                        std::push_heap(ws.hb.begin(), ws.hb.end(), std::greater<uint64_t>());
+                        if (ws.dist_f[v] != UINT32_MAX) {
+                            uint32_t cand = nd + ws.dist_f[v];
                             if (cand < best) best = cand;
                         }
                     } else if (nd < ws.dist_b[v]) {
                         ws.dist_b[v] = nd;
-                        ws.hb.push_back({nd, v});
-                        std::push_heap(ws.hb.begin(), ws.hb.end(), std::greater<Element>());
-                        if (ws.dist_f[v] != UINT64_MAX) {
-                            uint64_t cand = nd + ws.dist_f[v];
+                        ws.hb.push_back(pack_elem(nd, v));
+                        std::push_heap(ws.hb.begin(), ws.hb.end(), std::greater<uint64_t>());
+                        if (ws.dist_f[v] != UINT32_MAX) {
+                            uint32_t cand = nd + ws.dist_f[v];
                             if (cand < best) best = cand;
                         }
                     }
@@ -280,18 +296,18 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
         }
     }
 
-    // Reset only touched nodes to UINT64_MAX for next query
-    for (uint32_t v : ws.touched_f) ws.dist_f[v] = UINT64_MAX;
-    for (uint32_t v : ws.touched_b) ws.dist_b[v] = UINT64_MAX;
+    // Reset only touched nodes to UINT32_MAX for next query
+    for (uint32_t v : ws.touched_f) ws.dist_f[v] = UINT32_MAX;
+    for (uint32_t v : ws.touched_b) ws.dist_b[v] = UINT32_MAX;
     ws.touched_f.clear();
     ws.touched_b.clear();
 
-    return (best == UINT64_MAX) ? -1 : (int64_t)best;
+    return (best == UINT32_MAX) ? -1 : (int64_t)best;
 }
 
 int main(int argc, char** argv) {
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 2);
+    mallopt(M_ARENA_MAX, 1);
     mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
     std::ios_base::sync_with_stdio(false);
@@ -321,7 +337,7 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 8;
+    const size_t num_threads = 6;
     std::vector<std::string> thread_outputs(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
