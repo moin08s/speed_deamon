@@ -121,7 +121,7 @@ inline char* fast_u64(char* p, uint64_t val) {
 
 // Zero-allocation flat term table: stores string pointer directly into mmap!
 struct FastTermTable {
-    static constexpr uint32_t CAPACITY = 65536;
+    static constexpr uint32_t CAPACITY = 524288;
     static constexpr uint32_t MASK = CAPACITY - 1;
 
     struct Entry {

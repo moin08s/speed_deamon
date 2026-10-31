@@ -321,7 +321,7 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 12;
+    const size_t num_threads = 8;
     std::vector<std::string> thread_outputs(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
