@@ -77,7 +77,7 @@ struct CountryStats {
     bool has_cents = false;
     int64_t sum_name_len = 0;
     int64_t sum_note_len = 0;
-    std::vector<uint64_t> name_hashes;
+    std::vector<uint32_t> name_hashes;
 };
 
 inline char* fast_i64(char* p, int64_t val) {
@@ -132,8 +132,8 @@ inline int64_t parse_field_int(const char*& p, const char* limit) {
     return val;
 }
 
-inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& out_hash, size_t& utf8_len) {
-    out_hash = 0xcbf29ce484222325ULL;
+inline void parse_field_name_hash(const char*& p, const char* limit, uint32_t& out_hash, size_t& utf8_len) {
+    out_hash = 0x811c9dc5;
     utf8_len = 0;
     if (p >= limit) return;
     if (*p == '"') {
@@ -141,7 +141,7 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
         while (p < limit) {
             if (*p == '"') {
                 if (p + 1 < limit && *(p + 1) == '"') {
-                    out_hash = (out_hash ^ '"') * 0x100000001b3ULL;
+                    out_hash = (out_hash ^ '"') * 0x01000193;
                     utf8_len++;
                     p += 2;
                 } else {
@@ -150,18 +150,19 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
                 }
             } else {
                 unsigned char c = (unsigned char)*p++;
-                if ((c & 0xC0) != 0x80) utf8_len++;
-                out_hash = (out_hash ^ c) * 0x100000001b3ULL;
+                utf8_len++;
+                out_hash = (out_hash ^ c) * 0x01000193;
             }
         }
         if (p < limit && *p == ',') p++;
     } else {
-        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
-            unsigned char c = (unsigned char)*p++;
-            if ((c & 0xC0) != 0x80) utf8_len++;
-            out_hash = (out_hash ^ c) * 0x100000001b3ULL;
+        const char* comma = (const char*)std::memchr(p, ',', limit - p);
+        const char* end = comma ? comma : limit;
+        utf8_len = end - p;
+        while (p < end) {
+            out_hash = (out_hash ^ (unsigned char)*p++) * 0x01000193;
         }
-        if (p < limit && *p == ',') p++;
+        if (comma) p = comma + 1;
     }
 }
 
@@ -180,17 +181,20 @@ inline size_t parse_field_len_only(const char*& p, const char* limit) {
                     break;
                 }
             } else {
-                unsigned char c = (unsigned char)*p++;
-                if ((c & 0xC0) != 0x80) utf8_len++;
+                p++;
+                utf8_len++;
             }
         }
         if (p < limit && *p == ',') p++;
     } else {
-        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
-            unsigned char c = (unsigned char)*p++;
-            if ((c & 0xC0) != 0x80) utf8_len++;
+        const char* comma = (const char*)std::memchr(p, ',', limit - p);
+        if (comma) {
+            utf8_len = comma - p;
+            p = comma + 1;
+        } else {
+            utf8_len = limit - p;
+            p = limit;
         }
-        if (p < limit && *p == ',') p++;
     }
     return utf8_len;
 }
@@ -239,23 +243,18 @@ size_t find_fast_split(const char* data, size_t size, size_t target) {
         if (!nl_ptr) return size;
         size_t nl = nl_ptr - data;
 
-        // Check if preceded by .\d\d
         if (nl >= 4 && data[nl - 3] == '.' &&
             data[nl - 2] >= '0' && data[nl - 2] <= '9' &&
             data[nl - 1] >= '0' && data[nl - 1] <= '9') {
             
-            // Find line start
             size_t search_back = (nl > 1000) ? nl - 1000 : 0;
-            size_t prev_nl = search_back;
             const char* cur = data + nl - 1;
             while (cur >= data + search_back && *cur != '\n') cur--;
             size_t line_start = (cur >= data + search_back) ? (cur - data + 1) : 0;
 
-            // Check if line starts with digits followed by comma
             size_t p = line_start;
             while (p < nl && data[p] >= '0' && data[p] <= '9') p++;
             if (p > line_start && p < nl && data[p] == ',') {
-                // Count quotes on this single line
                 size_t line_quotes = 0;
                 for (size_t q = line_start; q < nl; ++q) {
                     if (data[q] == '"') line_quotes++;
@@ -406,7 +405,7 @@ int main(int argc, char** argv) {
 
             auto& stats = thread_stats[t];
             for (auto& cs : stats) {
-                cs.name_hashes.reserve(128);
+                cs.name_hashes.reserve(64);
             }
 
             const char* p = mf.data + start;
@@ -423,7 +422,7 @@ int main(int argc, char** argv) {
             while (p < limit) {
                 if (*p == '\r' || *p == '\n') { p++; continue; }
                 int64_t rec_id = parse_field_int(p, limit);
-                uint64_t name_hash = 0;
+                uint32_t name_hash = 0;
                 size_t name_len = 0;
                 parse_field_name_hash(p, limit, name_hash, name_len);
                 size_t note_len = parse_field_len_only(p, limit);
@@ -498,12 +497,12 @@ int main(int argc, char** argv) {
 
                 if (combined.count == 0) continue;
 
-                // Robust Phase 2 deduplication
+                // Robust Phase 2 deduplication with 32-bit hashes
                 size_t unique_names = 0;
                 if (combined.count == 1) {
                     unique_names = 1;
                 } else {
-                    std::vector<uint64_t> all_hashes;
+                    std::vector<uint32_t> all_hashes;
                     size_t total_h = 0;
                     for (size_t pt = 0; pt < num_threads; ++pt) total_h += thread_stats[pt][cid].name_hashes.size();
                     all_hashes.reserve(total_h);
@@ -558,7 +557,6 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
-
 
     return 0;
 }

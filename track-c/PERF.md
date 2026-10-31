@@ -18,4 +18,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 11 | Robust two-level deduplication + canonical alphabetical indexing | run-bb72ae47e296 | 0.168 | 47 | 51.84 |
 | 12 | O(1) localized fast-split boundary detection (eliminating 20MB full quote scan) | run-db8940e39e58 | 0.131 | 44 | 54.41 |
 | 13 | Single-vector packed 64-bit country-hash entries + O(1) direct slice offsets in Phase 2 | run-dca4ecbd8a7c | 0.148 | 38 | 53.66 |
-| 14 | High-throughput direct per-country deduplication + mallopt M_ARENA_MAX=2 | pending | pending | pending | pending |
+| 14 | High-throughput direct per-country deduplication + mallopt M_ARENA_MAX=2 | run-32c55d9ddd54 | 0.118 | 45 | 55.57 |
+| 15 | SIMD AVX2 memchr note length scanner + 32-bit compact FNV hashes | pending | pending | pending | pending |

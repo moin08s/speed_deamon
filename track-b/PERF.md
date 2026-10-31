@@ -20,3 +20,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 13 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + trim threshold | run-394989270c96 | 1.22 | 138 | 45.69 |
 | 14 | Restored flat two-pass direct postings scatter with zero intermediate heap vectors | run-3fb86689f067 | 1.01 | 161 | 47.29 |
 | 15 | Zero-allocation FastTermTable pointer lookup on mmap queries.txt + fast CHAR_MAP character translation + contention-free arena allocation (mallopt M_ARENA_MAX=2) | run-492d8675f079 | 1.047 | 130 | 47.54 |
+| 16 | 12-thread parallel query batching + zero-allocation direct postings slice evaluation | run-b373c26c7dc9 | 0.974 | 129 | 48.35 |
