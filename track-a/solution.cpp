@@ -405,6 +405,8 @@ int main(int argc, char** argv) {
                         }
                         ed.add(rec.lat, rec.is_err);
                     }
+                    parse_data[pt].hour_records[local_hid].clear();
+                    parse_data[pt].hour_records[local_hid].shrink_to_fit();
                 }
 
                 if (active_eps.empty()) continue;

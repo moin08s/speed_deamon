@@ -20,3 +20,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 13 | n=1 and n=2 zero-sort percentile fast-path | run-b99e0bd799cf | 0.083 | 60 | 63.63 |
 | 14 | Zero-allocation flat endpoint arena in Phase 2 reduction | run-9d5408ad00d3 | 0.111 | 71 | 59.43 |
 | 15 | Small-vector inline latency buffer (N<=4 zero-alloc) + O(1) method jump + register sorting | run-c0d84a6a4f84 | 0.092 | 70 | 61.29 |
+| 16 | Small-vector inline latency buffer + fast O(1) method jump | run-09d7c738965a | 0.086 | 70 | 62.02 |
+| 17 | In-flight hour records reclamation + mallopt M_ARENA_MAX=2 | pending | pending | pending | pending |
