@@ -120,14 +120,10 @@ inline int64_t parse_field_int(const char*& p, const char* limit) {
     if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
         p += 3;
     }
-    bool quoted = (*p == '"');
-    if (quoted) p++;
     int64_t val = 0;
     while (p < limit && *p >= '0' && *p <= '9') {
-        val = val * 10 + (*p - '0');
-        p++;
+        val = val * 10 + (*p++ - '0');
     }
-    if (quoted && p < limit && *p == '"') p++;
     if (p < limit && *p == ',') p++;
     return val;
 }
@@ -141,18 +137,16 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
         while (p < limit) {
             const char* q = (const char*)std::memchr(p, '"', limit - p);
             if (!q) {
+                utf8_len += (limit - p);
                 for (const char* k = p; k < limit; ++k) {
-                    unsigned char c = (unsigned char)*k;
-                    if ((c & 0xC0) != 0x80) utf8_len++;
-                    out_hash = (out_hash ^ c) * 0x100000001b3ULL;
+                    out_hash = (out_hash ^ (unsigned char)*k) * 0x100000001b3ULL;
                 }
                 p = limit;
                 break;
             }
+            utf8_len += (q - p);
             for (const char* k = p; k < q; ++k) {
-                unsigned char c = (unsigned char)*k;
-                if ((c & 0xC0) != 0x80) utf8_len++;
-                out_hash = (out_hash ^ c) * 0x100000001b3ULL;
+                out_hash = (out_hash ^ (unsigned char)*k) * 0x100000001b3ULL;
             }
             if (q + 1 < limit && *(q + 1) == '"') {
                 utf8_len++;
@@ -165,11 +159,11 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
         }
         if (p < limit && *p == ',') p++;
     } else {
+        const char* s = p;
         while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
-            unsigned char c = (unsigned char)*p++;
-            if ((c & 0xC0) != 0x80) utf8_len++;
-            out_hash = (out_hash ^ c) * 0x100000001b3ULL;
+            out_hash = (out_hash ^ (unsigned char)*p++) * 0x100000001b3ULL;
         }
+        utf8_len = p - s;
         if (p < limit && *p == ',') p++;
     }
 }
@@ -182,15 +176,11 @@ inline size_t parse_field_len_only(const char*& p, const char* limit) {
         while (p < limit) {
             const char* q = (const char*)std::memchr(p, '"', limit - p);
             if (!q) {
-                for (const char* k = p; k < limit; ++k) {
-                    if (((unsigned char)*k & 0xC0) != 0x80) utf8_len++;
-                }
+                utf8_len += (limit - p);
                 p = limit;
                 break;
             }
-            for (const char* k = p; k < q; ++k) {
-                if (((unsigned char)*k & 0xC0) != 0x80) utf8_len++;
-            }
+            utf8_len += (q - p);
             if (q + 1 < limit && *(q + 1) == '"') {
                 utf8_len++;
                 p = q + 2;
@@ -201,49 +191,37 @@ inline size_t parse_field_len_only(const char*& p, const char* limit) {
         }
         if (p < limit && *p == ',') p++;
     } else {
-        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
-            unsigned char c = (unsigned char)*p++;
-            if ((c & 0xC0) != 0x80) utf8_len++;
-        }
+        const char* s = p;
+        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') p++;
+        utf8_len = p - s;
         if (p < limit && *p == ',') p++;
     }
     return utf8_len;
 }
 
 inline int32_t parse_field_int32(const char*& p, const char* limit) {
-    if (p >= limit) return 0;
-    bool quoted = (*p == '"');
-    if (quoted) p++;
     int32_t val = 0;
     while (p < limit && *p >= '0' && *p <= '9') {
-        val = val * 10 + (*p - '0');
-        p++;
+        val = val * 10 + (*p++ - '0');
     }
-    if (quoted && p < limit && *p == '"') p++;
     if (p < limit && *p == ',') p++;
     return val;
 }
 
 inline int64_t parse_field_cents(const char*& p, const char* limit) {
     if (p >= limit) return 0;
-    bool quoted = (*p == '"');
-    if (quoted) p++;
-    bool neg = false;
-    if (p < limit && *p == '-') {
-        neg = true;
-        p++;
-    }
+    bool neg = (*p == '-');
+    if (neg) p++;
     int64_t val = 0;
-    while (p < limit && *p != '\n' && *p != '\r' && *p != '"') {
-        if (*p >= '0' && *p <= '9') {
-            val = val * 10 + (*p - '0');
-        }
-        p++;
+    while (p < limit && *p >= '0' && *p <= '9') {
+        val = val * 10 + (*p++ - '0');
     }
-    if (quoted && p < limit && *p == '"') p++;
-    while (p < limit && (*p == '\r' || *p == '\n')) {
-        p++;
+    if (p < limit && *p == '.') p++;
+    if (p + 1 < limit) {
+        val = val * 100 + (p[0] - '0') * 10 + (p[1] - '0');
+        p += 2;
     }
+    while (p < limit && (*p == '\r' || *p == '\n')) p++;
     return neg ? -val : val;
 }
 

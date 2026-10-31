@@ -27,3 +27,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 20 | 64K FastTermTable test (table overflow on 50K queries evaluation set) | run-042c12f98cc7 | null | 14 | failure (timeout) |
 | 21 | Safe 524K FastTermTable + SIMD memchr phrase candidate scanner + pre-reserved intersection buffers | run-814865d0b459 | 0.926 | 129 | 48.86 |
 | 22 | Adaptive galloping binary search for skewed set intersections and differences (`len_big > 8 * len_small`) | run-bd78a42dea7b | 0.733 | 140 | 51.09 |
+| 23 | Symmetric adaptive galloping search (intersect_slices) + 2-term direct intersection without initial copy + immediate docs.txt madvise DONTNEED page cache eviction | pending | pending | pending | pending |

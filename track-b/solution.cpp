@@ -281,34 +281,41 @@ enum QueryType { QUERY_BOOL, QUERY_PHRASE };
 enum BoolOp { OP_AND, OP_OR, OP_NOT };
 
 template <typename T>
-inline void intersect_adaptive(const std::vector<T>& small, const T* big, size_t big_len, std::vector<T>& out) {
+inline void intersect_slices(const T* a, size_t a_len, const T* b, size_t b_len, std::vector<T>& out) {
     out.clear();
-    if (small.empty() || big_len == 0) return;
-    
-    if (big_len > (small.size() << 3)) {
-        out.reserve(small.size());
-        const T* big_end = big + big_len;
-        const T* cur = big;
-        for (T x : small) {
+    if (a_len == 0 || b_len == 0) return;
+
+    if (a_len > b_len) {
+        std::swap(a, b);
+        std::swap(a_len, b_len);
+    }
+    out.reserve(a_len);
+    if (b_len > (a_len << 3)) {
+        const T* b_end = b + b_len;
+        const T* cur = b;
+        for (size_t i = 0; i < a_len; ++i) {
+            T x = a[i];
             size_t step = 1;
-            while (cur + step < big_end && *(cur + step) < x) {
+            while (cur + step < b_end && *(cur + step) < x) {
                 cur += step;
                 step <<= 1;
             }
-            const T* high = (cur + step + 1 < big_end) ? (cur + step + 1) : big_end;
+            const T* high = (cur + step + 1 < b_end) ? (cur + step + 1) : b_end;
             cur = std::lower_bound(cur, high, x);
-            if (cur == big_end) break;
+            if (cur == b_end) break;
             if (*cur == x) {
                 out.push_back(x);
                 cur++;
             }
         }
     } else {
-        out.reserve(small.size());
-        std::set_intersection(small.begin(), small.end(),
-                              big, big + big_len,
-                              std::back_inserter(out));
+        std::set_intersection(a, a + a_len, b, b + b_len, std::back_inserter(out));
     }
+}
+
+template <typename T>
+inline void intersect_adaptive(const std::vector<T>& small, const T* big, size_t big_len, std::vector<T>& out) {
+    intersect_slices(small.data(), small.size(), big, big_len, out);
 }
 
 template <typename T>
@@ -635,6 +642,10 @@ int main(int argc, char** argv) {
     thread_start.clear();
     thread_start.shrink_to_fit();
 
+#ifndef _WIN32
+    madvise((void*)mf.data, mf.size, MADV_DONTNEED);
+#endif
+
     auto get_postings = [&](int term_id) -> std::pair<const uint32_t*, size_t> {
         if (term_id < 0 || (size_t)term_id >= num_terms) return {nullptr, 0};
         uint32_t st = term_offsets[term_id];
@@ -679,14 +690,17 @@ int main(int argc, char** argv) {
                             });
 
                             auto [ptr0, len0] = get_postings(sorted_terms[0]);
-                            if (len0 > 0) {
-                                cur_res.assign(ptr0, ptr0 + len0);
-                                for (size_t k = 1; k < sorted_terms.size(); ++k) {
+                            auto [ptr1, len1] = get_postings(sorted_terms[1]);
+                            if (len0 == 0 || len1 == 0) {
+                                cur_res.clear();
+                            } else {
+                                intersect_slices(ptr0, len0, ptr1, len1, cur_res);
+                                for (size_t k = 2; k < sorted_terms.size(); ++k) {
                                     if (cur_res.empty()) break;
                                     auto [ptr_k, len_k] = get_postings(sorted_terms[k]);
                                     if (len_k == 0) { cur_res.clear(); break; }
-                                    intersect_adaptive(cur_res, ptr_k, len_k, temp);
-                                    cur_res = std::move(temp);
+                                    intersect_slices(cur_res.data(), cur_res.size(), ptr_k, len_k, temp);
+                                    cur_res.swap(temp);
                                 }
                             }
                         } else {
@@ -703,8 +717,8 @@ int main(int argc, char** argv) {
                                     if (len_rhs == 0 || cur_res.empty()) {
                                         cur_res.clear();
                                     } else {
-                                        intersect_adaptive(cur_res, ptr_rhs, len_rhs, temp);
-                                        cur_res = std::move(temp);
+                                        intersect_slices(cur_res.data(), cur_res.size(), ptr_rhs, len_rhs, temp);
+                                        cur_res.swap(temp);
                                     }
                                 } else if (op == OP_OR) {
                                     if (len_rhs > 0) {
@@ -715,13 +729,13 @@ int main(int argc, char** argv) {
                                             std::set_union(cur_res.begin(), cur_res.end(),
                                                            ptr_rhs, ptr_rhs + len_rhs,
                                                            std::back_inserter(temp));
-                                            cur_res = std::move(temp);
+                                            cur_res.swap(temp);
                                         }
                                     }
                                 } else if (op == OP_NOT) {
                                     if (len_rhs > 0 && !cur_res.empty()) {
                                         difference_adaptive(cur_res, ptr_rhs, len_rhs, temp);
-                                        cur_res = std::move(temp);
+                                        cur_res.swap(temp);
                                     }
                                 }
                             }
@@ -741,32 +755,55 @@ int main(int argc, char** argv) {
 
                         if (min_len == 0) {
                             cur_res.clear();
-                        } else {
+                        } else if (q.phrase_term_ids.size() == 1) {
                             auto [ptr_min, len_min] = get_postings(q.phrase_term_ids[min_idx]);
                             cur_res.assign(ptr_min, ptr_min + len_min);
-
+                            temp.clear();
+                            for (uint32_t doc_id : cur_res) {
+                                uint32_t off = doc_offsets[doc_id];
+                                uint32_t ln = doc_lens[doc_id];
+                                if (match_phrase_fast(mf.data + off, ln, q.phrase_terms)) {
+                                    temp.push_back(doc_id);
+                                }
+                            }
+                            cur_res.swap(temp);
+                        } else {
+                            size_t sec_idx = (min_idx == 0) ? 1 : 0;
+                            size_t sec_len = (size_t)-1;
                             for (size_t k = 0; k < q.phrase_term_ids.size(); ++k) {
                                 if (k == min_idx) continue;
-                                if (cur_res.empty()) break;
-                                auto [ptr_k, len_k] = get_postings(q.phrase_term_ids[k]);
-                                if (len_k == 0) {
-                                    cur_res.clear();
-                                    break;
+                                auto [p, len] = get_postings(q.phrase_term_ids[k]);
+                                if (len < sec_len) {
+                                    sec_len = len;
+                                    sec_idx = k;
                                 }
-                                intersect_adaptive(cur_res, ptr_k, len_k, temp);
-                                cur_res = std::move(temp);
                             }
-
-                            if (!cur_res.empty()) {
-                                temp.clear();
-                                for (uint32_t doc_id : cur_res) {
-                                    uint32_t off = doc_offsets[doc_id];
-                                    uint32_t ln = doc_lens[doc_id];
-                                    if (match_phrase_fast(mf.data + off, ln, q.phrase_terms)) {
-                                        temp.push_back(doc_id);
-                                    }
+                            auto [ptr_min, len_min] = get_postings(q.phrase_term_ids[min_idx]);
+                            auto [ptr_sec, len_sec] = get_postings(q.phrase_term_ids[sec_idx]);
+                            if (len_sec == 0) {
+                                cur_res.clear();
+                            } else {
+                                intersect_slices(ptr_min, len_min, ptr_sec, len_sec, cur_res);
+                                for (size_t k = 0; k < q.phrase_term_ids.size(); ++k) {
+                                    if (k == min_idx || k == sec_idx) continue;
+                                    if (cur_res.empty()) break;
+                                    auto [ptr_k, len_k] = get_postings(q.phrase_term_ids[k]);
+                                    if (len_k == 0) { cur_res.clear(); break; }
+                                    intersect_slices(cur_res.data(), cur_res.size(), ptr_k, len_k, temp);
+                                    cur_res.swap(temp);
                                 }
-                                cur_res = std::move(temp);
+
+                                if (!cur_res.empty()) {
+                                    temp.clear();
+                                    for (uint32_t doc_id : cur_res) {
+                                        uint32_t off = doc_offsets[doc_id];
+                                        uint32_t ln = doc_lens[doc_id];
+                                        if (match_phrase_fast(mf.data + off, ln, q.phrase_terms)) {
+                                            temp.push_back(doc_id);
+                                        }
+                                    }
+                                    cur_res.swap(temp);
+                                }
                             }
                         }
                     }
