@@ -14,3 +14,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 7 | O(N) counting sort on hour IDs eliminating std::sort + latency buffer capacity reuse | run-d8fe10ccd04a | 0.09 | 92 | 60.01 |
 | 8 | Per-hour bucketed parsing to eliminate sorted_records vector + direct global-to-local indexing | run-d4f5949e00fa | 0.089 | 73 | 61.23 |
 | 9 | Scaled initial vector reservations from 64K to 4K and pre-reserved 64 entries on endpoint creation | run-2881745e8349 | 0.089 | 76 | 61.83 |
+| 10 | Direct 16K FastGroupMap per thread eliminating 2D vector tables, single contiguous group sort+merge, parallel string formatting | pending | pending | pending | pending |
