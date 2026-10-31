@@ -53,15 +53,20 @@ struct MappedFile {
 #endif
     }
 
-    ~MappedFile() {
+    void close() {
 #ifdef _WIN32
-        if (data) UnmapViewOfFile(data);
-        if (hMap) CloseHandle(hMap);
-        if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+        if (data) { UnmapViewOfFile(data); data = nullptr; }
+        if (hMap) { CloseHandle(hMap); hMap = NULL; }
+        if (hFile != INVALID_HANDLE_VALUE) { CloseHandle(hFile); hFile = INVALID_HANDLE_VALUE; }
 #else
-        if (data && data != MAP_FAILED) munmap((void*)data, size);
-        if (fd >= 0) ::close(fd);
+        if (data && data != MAP_FAILED) { munmap((void*)data, size); data = nullptr; }
+        if (fd >= 0) { ::close(fd); fd = -1; }
 #endif
+        size = 0;
+    }
+
+    ~MappedFile() {
+        close();
     }
 };
 
@@ -262,6 +267,7 @@ int main(int argc, char** argv) {
     for (auto& t : threads) {
         t.join();
     }
+    mf.close(); // Immediately unmap requests.log to drop page cache
 
     // Collect and sort global hours
     std::vector<std::string> global_hours;

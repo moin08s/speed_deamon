@@ -52,15 +52,20 @@ struct MappedFile {
 #endif
     }
 
-    ~MappedFile() {
+    void close() {
 #ifdef _WIN32
-        if (data) UnmapViewOfFile(data);
-        if (hMap) CloseHandle(hMap);
-        if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+        if (data) { UnmapViewOfFile(data); data = nullptr; }
+        if (hMap) { CloseHandle(hMap); hMap = NULL; }
+        if (hFile != INVALID_HANDLE_VALUE) { CloseHandle(hFile); hFile = INVALID_HANDLE_VALUE; }
 #else
-        if (data && data != MAP_FAILED) munmap((void*)data, size);
-        if (fd >= 0) ::close(fd);
+        if (data && data != MAP_FAILED) { munmap((void*)data, size); data = nullptr; }
+        if (fd >= 0) { ::close(fd); fd = -1; }
 #endif
+        size = 0;
+    }
+
+    ~MappedFile() {
+        close();
     }
 };
 
@@ -119,14 +124,19 @@ void load_graph(const char* path, CSRGraph& g) {
     g.fwd_head.assign(g.n + 1, 0);
     g.bwd_head.assign(g.n + 1, 0);
 
-    const char* p_edges = p;
+    struct Edge { uint32_t u, v, w; };
+    std::vector<Edge> edges(g.m);
+
     for (uint32_t i = 0; i < g.m; ++i) {
         uint32_t u = parse_uint(p, limit);
         uint32_t v = parse_uint(p, limit);
         uint32_t w = parse_uint(p, limit);
+        edges[i] = {u, v, w};
         if (u + 1 <= g.n) g.fwd_head[u + 1]++;
         if (v + 1 <= g.n) g.bwd_head[v + 1]++;
     }
+
+    mf.close(); // Unmap graph.txt immediately
 
     for (uint32_t i = 0; i < g.n; ++i) {
         g.fwd_head[i + 1] += g.fwd_head[i];
@@ -141,19 +151,15 @@ void load_graph(const char* path, CSRGraph& g) {
     g.bwd_w.resize(g.m);
     std::vector<uint32_t> bwd_cur = g.bwd_head;
 
-    p = p_edges;
     for (uint32_t i = 0; i < g.m; ++i) {
-        uint32_t u = parse_uint(p, limit);
-        uint32_t v = parse_uint(p, limit);
-        uint32_t w = parse_uint(p, limit);
+        const auto& e = edges[i];
+        uint32_t pf = fwd_cur[e.u]++;
+        g.fwd_dst[pf] = e.v;
+        g.fwd_w[pf] = e.w;
 
-        uint32_t pf = fwd_cur[u]++;
-        g.fwd_dst[pf] = v;
-        g.fwd_w[pf] = w;
-
-        uint32_t pb = bwd_cur[v]++;
-        g.bwd_dst[pb] = u;
-        g.bwd_w[pb] = w;
+        uint32_t pb = bwd_cur[e.v]++;
+        g.bwd_dst[pb] = e.u;
+        g.bwd_w[pb] = e.w;
     }
 }
 
@@ -302,10 +308,11 @@ int main(int argc, char** argv) {
             uint32_t t = parse_uint(p, limit);
             queries.emplace_back(s, t);
         }
+        qmf.close(); // Unmap queries.txt immediately
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 6;
+    const size_t num_threads = 12;
     std::vector<std::string> thread_outputs(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);

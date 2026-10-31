@@ -53,15 +53,20 @@ struct MappedFile {
 #endif
     }
 
-    ~MappedFile() {
+    void close() {
 #ifdef _WIN32
-        if (data) UnmapViewOfFile(data);
-        if (hMap) CloseHandle(hMap);
-        if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+        if (data) { UnmapViewOfFile(data); data = nullptr; }
+        if (hMap) { CloseHandle(hMap); hMap = NULL; }
+        if (hFile != INVALID_HANDLE_VALUE) { CloseHandle(hFile); hFile = INVALID_HANDLE_VALUE; }
 #else
-        if (data && data != MAP_FAILED) munmap((void*)data, size);
-        if (fd >= 0) ::close(fd);
+        if (data && data != MAP_FAILED) { munmap((void*)data, size); data = nullptr; }
+        if (fd >= 0) { ::close(fd); fd = -1; }
 #endif
+        size = 0;
+    }
+
+    ~MappedFile() {
+        close();
     }
 };
 
@@ -342,6 +347,7 @@ int main(int argc, char** argv) {
         }
         queries.push_back(std::move(q));
     }
+    qmf.close(); // Unmap queries.txt immediately
 
     size_t num_terms = term_table.count;
 
@@ -382,9 +388,11 @@ int main(int argc, char** argv) {
             const char* p = mf.data + split_points[t];
             const char* limit = mf.data + split_points[t + 1];
             auto& t_idx = thread_indices[t];
-            t_idx.entries.reserve((limit - p) / 10);
+            t_idx.entries.reserve((limit - p) / 25);
             t_idx.term_counts.assign(num_terms, 0);
 
+            std::vector<uint32_t> term_seen(num_terms, 0);
+            uint32_t cur_epoch = 1;
             std::vector<int> doc_terms;
             doc_terms.reserve(256);
 
@@ -409,6 +417,10 @@ int main(int argc, char** argv) {
                     t_idx.docs.push_back({doc_id, offset, text_len});
 
                     doc_terms.clear();
+                    if (cur_epoch == 0xFFFFFFF0) {
+                        std::fill(term_seen.begin(), term_seen.end(), 0);
+                        cur_epoch = 1;
+                    }
                     const char* tp = text_start;
                     while (tp < line_end) {
                         while (tp < line_end && !IS_ALNUM[(uint8_t)to_lower_char(*tp)]) tp++;
@@ -422,12 +434,13 @@ int main(int argc, char** argv) {
                         size_t w_len = tp - w_start;
                         int term_id = term_table.find(w_start, w_len, h);
                         if (term_id != -1) {
-                            doc_terms.push_back(term_id);
+                            if (term_seen[term_id] != cur_epoch) {
+                                term_seen[term_id] = cur_epoch;
+                                doc_terms.push_back(term_id);
+                            }
                         }
                     }
-
-                    std::sort(doc_terms.begin(), doc_terms.end());
-                    doc_terms.erase(std::unique(doc_terms.begin(), doc_terms.end()), doc_terms.end());
+                    cur_epoch++;
 
                     for (int term_id : doc_terms) {
                         t_idx.entries.push_back({(uint32_t)term_id, doc_id});
@@ -488,7 +501,9 @@ int main(int argc, char** argv) {
 
     // Free thread indices immediately to minimize peak memory
     thread_indices.clear();
+    thread_indices.shrink_to_fit();
     thread_start.clear();
+    thread_start.shrink_to_fit();
 
     // Query helper: get postings slice for a term
     auto get_postings = [&](int term_id) -> std::pair<const uint32_t*, size_t> {
