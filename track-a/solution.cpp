@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <utility>
+#include <chrono>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -118,6 +119,7 @@ struct ThreadData {
     std::vector<std::string> hours;
     std::vector<std::string> endpoints;
     std::vector<LocalGroup> groups;
+    std::vector<uint32_t> active_indices;
 };
 
 void parse_chunk_raw(const char* buf, size_t start, size_t end, ThreadData& td) {
@@ -136,7 +138,6 @@ void parse_chunk_raw(const char* buf, size_t start, size_t end, ThreadData& td) 
             continue;
         }
 
-        // Must have at least 35 bytes for a valid log line
         if (limit - p < 35) break;
 
         // Hour: p[0..12]
@@ -150,7 +151,7 @@ void parse_chunk_raw(const char* buf, size_t start, size_t end, ThreadData& td) 
             last_hour_ptr = p;
         }
 
-        // Method starts at p + 28 (timestamp is 27 chars + 1 space)
+        // Method starts at p + 28
         const char* m_scan = p + 28;
         while (m_scan < limit && *m_scan != ' ') m_scan++;
         if (m_scan >= limit) break;
@@ -171,7 +172,7 @@ void parse_chunk_raw(const char* buf, size_t start, size_t end, ThreadData& td) 
         const char* status_ptr = ep_end + 1;
         bool is_err = (status_ptr < limit && *status_ptr == '5');
 
-        // Latency starts after status + space (status is 3 digits + 1 space = 4 chars)
+        // Latency
         const char* lat_ptr = status_ptr + 4;
         uint32_t lat = 0;
         while (lat_ptr < limit && *lat_ptr >= '0' && *lat_ptr <= '9') {
@@ -181,11 +182,109 @@ void parse_chunk_raw(const char* buf, size_t start, size_t end, ThreadData& td) 
 
         size_t g_idx = (size_t)hid * MAX_EP + eid;
         auto& grp = td.groups[g_idx];
+        if (grp.latencies.empty()) td.active_indices.push_back((uint32_t)g_idx);
         grp.latencies.push_back(lat);
         if (is_err) grp.errors++;
 
         while (lat_ptr < limit && *lat_ptr != '\n') lat_ptr++;
         p = (lat_ptr < limit) ? lat_ptr + 1 : limit;
+    }
+}
+
+inline char* fast_u32(char* p, uint32_t val) {
+    if (val == 0) {
+        *p++ = '0';
+        return p;
+    }
+    char buf[10];
+    int len = 0;
+    while (val > 0) {
+        buf[len++] = '0' + (val % 10);
+        val /= 10;
+    }
+    for (int i = len - 1; i >= 0; --i) {
+        *p++ = buf[i];
+    }
+    return p;
+}
+
+inline char* fast_u64(char* p, uint64_t val) {
+    if (val == 0) {
+        *p++ = '0';
+        return p;
+    }
+    char buf[20];
+    int len = 0;
+    while (val > 0) {
+        buf[len++] = '0' + (val % 10);
+        val /= 10;
+    }
+    for (int i = len - 1; i >= 0; --i) {
+        *p++ = buf[i];
+    }
+    return p;
+}
+
+struct OutGroup {
+    std::string hour;
+    std::string endpoint;
+    std::vector<uint32_t> latencies;
+    uint32_t errors = 0;
+};
+
+void format_worker(OutGroup* groups, size_t start, size_t end, std::string& out_buf) {
+    out_buf.reserve((end - start) * 96);
+    char line_buf[2048];
+
+    for (size_t i = start; i < end; ++i) {
+        auto& grp = groups[i];
+        auto& lat = grp.latencies;
+        size_t n = lat.size();
+        if (n == 0) continue;
+
+        size_t idx50 = (50ULL * n + 99) / 100 - 1;
+        size_t idx95 = (95ULL * n + 99) / 100 - 1;
+        size_t idx99 = (99ULL * n + 99) / 100 - 1;
+
+        uint32_t p50, p95, p99;
+        if (n <= 16) {
+            std::sort(lat.begin(), lat.end());
+            p50 = lat[idx50];
+            p95 = lat[idx95];
+            p99 = lat[idx99];
+        } else {
+            std::nth_element(lat.begin(), lat.begin() + idx50, lat.end());
+            p50 = lat[idx50];
+            std::nth_element(lat.begin() + idx50 + 1, lat.begin() + idx95, lat.end());
+            p95 = lat[idx95];
+            std::nth_element(lat.begin() + idx95 + 1, lat.begin() + idx99, lat.end());
+            p99 = lat[idx99];
+        }
+
+        uint64_t ppm = (uint64_t)grp.errors * 1000000ULL / n;
+
+        char* p = line_buf;
+        std::memcpy(p, grp.hour.data(), 13);
+        p += 13;
+        std::memcpy(p, ":00:00Z ", 8);
+        p += 8;
+        std::memcpy(p, grp.endpoint.data(), grp.endpoint.size());
+        p += grp.endpoint.size();
+        *p++ = ' ';
+        p = fast_u64(p, n);
+        *p++ = ' ';
+        p = fast_u32(p, p50);
+        *p++ = ' ';
+        p = fast_u32(p, p95);
+        *p++ = ' ';
+        p = fast_u32(p, p99);
+        *p++ = ' ';
+        p = fast_u32(p, grp.errors);
+        *p++ = ' ';
+        p = fast_u64(p, ppm);
+        *p++ = '\n';
+
+        out_buf.append(line_buf, p - line_buf);
     }
 }
 
@@ -206,7 +305,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const size_t num_threads = 6;
+    const size_t num_threads = 12;
     std::vector<size_t> split_points;
     split_points.push_back(0);
 
@@ -230,13 +329,6 @@ int main(int argc, char** argv) {
         t.join();
     }
 
-    struct OutGroup {
-        std::string hour;
-        std::string endpoint;
-        std::vector<uint32_t> latencies;
-        uint32_t errors = 0;
-    };
-
     std::vector<OutGroup> out_groups;
     out_groups.reserve(70000);
 
@@ -251,40 +343,39 @@ int main(int argc, char** argv) {
 
     for (size_t t = 0; t < num_threads; ++t) {
         auto& td = thread_data[t];
-        for (int h = 0; h < (int)td.hours.size(); ++h) {
-            for (int e = 0; e < (int)td.endpoints.size(); ++e) {
-                size_t g_idx = (size_t)h * MAX_EP + e;
-                auto& grp = td.groups[g_idx];
-                if (!grp.latencies.empty()) {
-                    const std::string& hr = td.hours[h];
-                    const std::string& ep = td.endpoints[e];
-                    uint64_t hsh = FastStringMap::hash_bytes(hr.data(), hr.size());
-                    hsh ^= FastStringMap::hash_bytes(ep.data(), ep.size()) + 0x9e3779b97f4a7c15ULL + (hsh << 6) + (hsh >> 2);
-                    if (hsh == 0) hsh = 1;
+        for (uint32_t g_idx : td.active_indices) {
+            auto& grp = td.groups[g_idx];
+            if (!grp.latencies.empty()) {
+                int h = g_idx / MAX_EP;
+                int e = g_idx % MAX_EP;
+                const std::string& hr = td.hours[h];
+                const std::string& ep = td.endpoints[e];
+                uint64_t hsh = FastStringMap::hash_bytes(hr.data(), hr.size());
+                hsh ^= FastStringMap::hash_bytes(ep.data(), ep.size()) + 0x9e3779b97f4a7c15ULL + (hsh << 6) + (hsh >> 2);
+                if (hsh == 0) hsh = 1;
 
-                    uint32_t s_idx = (uint32_t)hsh & MERGE_MASK;
-                    int found_idx = -1;
-                    while (merge_table[s_idx].hash != 0) {
-                        if (merge_table[s_idx].hash == hsh) {
-                            int g = merge_table[s_idx].group_idx;
-                            if (out_groups[g].hour == hr && out_groups[g].endpoint == ep) {
-                                found_idx = g;
-                                break;
-                            }
+                uint32_t s_idx = (uint32_t)hsh & MERGE_MASK;
+                int found_idx = -1;
+                while (merge_table[s_idx].hash != 0) {
+                    if (merge_table[s_idx].hash == hsh) {
+                        int g = merge_table[s_idx].group_idx;
+                        if (out_groups[g].hour == hr && out_groups[g].endpoint == ep) {
+                            found_idx = g;
+                            break;
                         }
-                        s_idx = (s_idx + 1) & MERGE_MASK;
                     }
+                    s_idx = (s_idx + 1) & MERGE_MASK;
+                }
 
-                    if (found_idx == -1) {
-                        found_idx = (int)out_groups.size();
-                        out_groups.push_back({hr, ep, std::move(grp.latencies), grp.errors});
-                        merge_table[s_idx].hash = hsh;
-                        merge_table[s_idx].group_idx = found_idx;
-                    } else {
-                        auto& target = out_groups[found_idx];
-                        target.latencies.insert(target.latencies.end(), grp.latencies.begin(), grp.latencies.end());
-                        target.errors += grp.errors;
-                    }
+                if (found_idx == -1) {
+                    found_idx = (int)out_groups.size();
+                    out_groups.push_back({hr, ep, std::move(grp.latencies), grp.errors});
+                    merge_table[s_idx].hash = hsh;
+                    merge_table[s_idx].group_idx = found_idx;
+                } else {
+                    auto& target = out_groups[found_idx];
+                    target.latencies.insert(target.latencies.end(), grp.latencies.begin(), grp.latencies.end());
+                    target.errors += grp.errors;
                 }
             }
         }
@@ -295,40 +386,37 @@ int main(int argc, char** argv) {
         return a.endpoint < b.endpoint;
     });
 
+    // Parallel formatting across 12 threads
+    std::vector<std::string> thread_outputs(num_threads);
+    std::vector<std::thread> format_threads;
+    format_threads.reserve(num_threads);
+
+    size_t total_out = out_groups.size();
+    size_t chunk_sz = (total_out + num_threads - 1) / num_threads;
+
+    for (size_t i = 0; i < num_threads; ++i) {
+        size_t s = i * chunk_sz;
+        size_t e = std::min(s + chunk_sz, total_out);
+        format_threads.emplace_back(format_worker, out_groups.data(), s, e, std::ref(thread_outputs[i]));
+    }
+
+    for (auto& t : format_threads) {
+        t.join();
+    }
+
     std::string out_path = out_dir + "/summary.txt";
     FILE* fp = fopen(out_path.c_str(), "wb");
     if (!fp) return 1;
+    char file_buf[2097152];
+    setvbuf(fp, file_buf, _IOFBF, sizeof(file_buf));
 
-    char out_buf[1048576];
-    setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
-
-    char line_buf[2048];
-    for (auto& grp : out_groups) {
-        auto& lat = grp.latencies;
-        size_t n = lat.size();
-        if (n == 0) continue;
-
-        size_t idx50 = (50ULL * n + 99) / 100 - 1;
-        size_t idx95 = (95ULL * n + 99) / 100 - 1;
-        size_t idx99 = (99ULL * n + 99) / 100 - 1;
-
-        std::nth_element(lat.begin(), lat.begin() + idx50, lat.end());
-        uint32_t p50 = lat[idx50];
-
-        std::nth_element(lat.begin() + idx50 + 1, lat.begin() + idx95, lat.end());
-        uint32_t p95 = lat[idx95];
-
-        std::nth_element(lat.begin() + idx95 + 1, lat.begin() + idx99, lat.end());
-        uint32_t p99 = lat[idx99];
-
-        uint64_t ppm = (uint64_t)grp.errors * 1000000ULL / n;
-
-        int len = snprintf(line_buf, sizeof(line_buf), "%s:00:00Z %s %zu %u %u %u %u %llu\n",
-                           grp.hour.c_str(), grp.endpoint.c_str(), n,
-                           p50, p95, p99, grp.errors, (unsigned long long)ppm);
-        fwrite(line_buf, 1, len, fp);
+    for (size_t i = 0; i < num_threads; ++i) {
+        if (!thread_outputs[i].empty()) {
+            fwrite(thread_outputs[i].data(), 1, thread_outputs[i].size(), fp);
+        }
     }
     fclose(fp);
+
 
     return 0;
 }

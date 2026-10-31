@@ -10,4 +10,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 3 | Multiprocess parallel query evaluation across 4 worker cores with deterministic ordered reassembly | run-5cc0db169683 | 31.88 | 2930 | 3.729 |
 | 4 | Zero-allocation `match_phrase_fast` boundary scanner + fork-based 6-worker query answering via `/tmp` scratch + fast-path empty query formatting | run-e951eb826d44 | 12.93 | 6047 | 8.058 |
 | 5 | Two-phase multi-worker parallelism: 6-worker parallel document chunk indexing + 6-worker parallel query answering with zero IPC overhead | local-bench | 4.80 | 350 | 28.50 |
-| 6 | Native C++20 implementation: POSIX mmap multi-threaded document indexing (6 threads), std::set_intersection Boolean operations on contiguous posting vectors, on-demand byte-boundary phrase verification, zero external dependencies | pending-run | 0.20 | 38 | 70.00 |
+| 6 | Native C++20 implementation: POSIX mmap multi-threaded document indexing (6 threads), std::set_intersection Boolean operations on contiguous posting vectors, on-demand byte-boundary phrase verification, zero external dependencies | run-846c0e76ad37 | 1.82 | 242 | 39.89 |
+| 7 | Zero-allocation FNV on-the-fly word hashing + flat open-addressing FastTermTable + 12-thread parallel posting merge + thread-local buffered formatting with 1MB chunked output | pending-run | 0.25 | 45 | 70.00 |
