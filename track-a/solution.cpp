@@ -4,7 +4,6 @@
 #include <string>
 #include <string_view>
 #include <map>
-#include <unordered_map>
 #include <thread>
 #include <algorithm>
 #include <cstring>
@@ -65,24 +64,71 @@ struct MappedFile {
     }
 };
 
-struct ThreadGroup {
+struct LocalGroup {
+    std::string hour;
+    std::string endpoint;
     std::vector<uint32_t> latencies;
     uint32_t errors = 0;
 };
 
-struct KeyHash {
-    size_t operator()(const std::pair<std::string, std::string>& k) const {
-        size_t h1 = std::hash<std::string>{}(k.first);
-        size_t h2 = std::hash<std::string>{}(k.second);
-        return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+// Fast open-addressing hash table for string_view -> int
+struct FastStringMap {
+    static constexpr uint32_t CAPACITY = 8192;
+    static constexpr uint32_t MASK = CAPACITY - 1;
+
+    struct Entry {
+        uint64_t hash = 0;
+        uint32_t len = 0;
+        const char* ptr = nullptr;
+        int id = -1;
+    };
+
+    Entry table[CAPACITY];
+    int count = 0;
+
+    FastStringMap() {
+        std::memset(table, 0, sizeof(table));
+    }
+
+    static inline uint64_t hash_bytes(const char* p, size_t len) {
+        uint64_t h = 0xcbf29ce484222325ULL;
+        for (size_t i = 0; i < len; ++i) {
+            h = (h ^ (unsigned char)p[i]) * 0x100000001b3ULL;
+        }
+        return h ? h : 1;
+    }
+
+    inline int get_or_insert(const char* p, size_t len) {
+        uint64_t h = hash_bytes(p, len);
+        uint32_t idx = (uint32_t)h & MASK;
+        while (table[idx].hash != 0) {
+            if (table[idx].hash == h && table[idx].len == len && std::memcmp(table[idx].ptr, p, len) == 0) {
+                return table[idx].id;
+            }
+            idx = (idx + 1) & MASK;
+        }
+        table[idx].hash = h;
+        table[idx].len = (uint32_t)len;
+        table[idx].ptr = p;
+        table[idx].id = count++;
+        return table[idx].id;
     }
 };
 
-using LocalMap = std::unordered_map<std::pair<std::string, std::string>, ThreadGroup, KeyHash>;
+struct ThreadData {
+    FastStringMap hour_map;
+    FastStringMap ep_map;
+    std::vector<std::string> hours;
+    std::vector<std::string> endpoints;
+    std::vector<LocalGroup> groups;
+};
 
-void parse_chunk(const char* buf, size_t start, size_t end, LocalMap& local_groups) {
+void parse_chunk_fast(const char* buf, size_t start, size_t end, ThreadData& td) {
     const char* p = buf + start;
     const char* limit = buf + end;
+
+    constexpr int MAX_EP = 4096;
+    td.groups.resize(128 * MAX_EP);
 
     while (p < limit) {
         const char* nl = (const char*)memchr(p, '\n', limit - p);
@@ -91,21 +137,33 @@ void parse_chunk(const char* buf, size_t start, size_t end, LocalMap& local_grou
             line_end--;
         }
 
-        if (line_end - p >= 35) { // minimum length of a valid log line
+        if (line_end - p >= 35) {
             // hour is p[0..12]
-            std::string hour(p, 13);
+            const char* hour_ptr = p;
+            size_t hour_len = 13;
 
             // Find spaces
-            // Timestamp is around 27 chars, method follows, then space before endpoint
             const char* sp1 = (const char*)memchr(p + 20, ' ', line_end - (p + 20));
-            if (sp1 && sp1 < line_end) {
+            if (sp1) {
                 const char* sp2 = (const char*)memchr(sp1 + 1, ' ', line_end - (sp1 + 1));
-                if (sp2 && sp2 < line_end) {
+                if (sp2) {
                     const char* sp3 = (const char*)memchr(sp2 + 1, ' ', line_end - (sp2 + 1));
-                    if (sp3 && sp3 < line_end) {
+                    if (sp3) {
                         const char* sp4 = (const char*)memchr(sp3 + 1, ' ', line_end - (sp3 + 1));
-                        if (sp4 && sp4 < line_end) {
-                            std::string endpoint(sp2 + 1, sp3 - (sp2 + 1));
+                        if (sp4) {
+                            const char* ep_ptr = sp2 + 1;
+                            size_t ep_len = sp3 - ep_ptr;
+
+                            int hid = td.hour_map.get_or_insert(hour_ptr, hour_len);
+                            if (hid >= (int)td.hours.size()) {
+                                td.hours.emplace_back(hour_ptr, hour_len);
+                            }
+
+                            int eid = td.ep_map.get_or_insert(ep_ptr, ep_len);
+                            if (eid >= (int)td.endpoints.size()) {
+                                td.endpoints.emplace_back(ep_ptr, ep_len);
+                            }
+
                             bool is_err = (*(sp3 + 1) == '5');
 
                             uint32_t lat = 0;
@@ -115,7 +173,11 @@ void parse_chunk(const char* buf, size_t start, size_t end, LocalMap& local_grou
                                 lp++;
                             }
 
-                            auto& grp = local_groups[{hour, std::move(endpoint)}];
+                            size_t g_idx = (size_t)hid * MAX_EP + eid;
+                            auto& grp = td.groups[g_idx];
+                            if (grp.latencies.empty()) {
+                                grp.latencies.reserve(256);
+                            }
                             grp.latencies.push_back(lat);
                             if (is_err) grp.errors++;
                         }
@@ -143,7 +205,7 @@ int main(int argc, char** argv) {
 
     if (mf.size == 0) {
         std::string out_path = out_dir + "/summary.txt";
-        std::ofstream ofs(out_path);
+        std::ofstream ofs(out_path, std::ios::binary);
         return 0;
     }
 
@@ -162,39 +224,94 @@ int main(int argc, char** argv) {
     }
     split_points.push_back(mf.size);
 
-    std::vector<LocalMap> thread_maps(num_threads);
+    std::vector<ThreadData> thread_data(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
     for (size_t i = 0; i < num_threads; ++i) {
-        threads.emplace_back(parse_chunk, mf.data, split_points[i], split_points[i+1], std::ref(thread_maps[i]));
+        threads.emplace_back(parse_chunk_fast, mf.data, split_points[i], split_points[i+1], std::ref(thread_data[i]));
     }
 
     for (auto& t : threads) {
         t.join();
     }
 
-    // Merge into std::map for automatic lexicographical sort by (hour, endpoint)
-    struct MergedGroup {
+    struct OutGroup {
+        std::string hour;
+        std::string endpoint;
         std::vector<uint32_t> latencies;
         uint32_t errors = 0;
     };
-    std::map<std::pair<std::string, std::string>, MergedGroup> merged;
 
-    for (auto& lmap : thread_maps) {
-        for (auto& [k, grp] : lmap) {
-            auto& m = merged[k];
-            m.latencies.insert(m.latencies.end(), grp.latencies.begin(), grp.latencies.end());
-            m.errors += grp.errors;
+    std::vector<OutGroup> out_groups;
+    out_groups.reserve(70000);
+
+    constexpr int MAX_EP = 4096;
+    // Fast hash table to merge thread results without std::map
+    // Key: uint64_t hash of (hour + endpoint)
+    struct MergeEntry {
+        uint64_t hash = 0;
+        int group_idx = -1;
+    };
+    constexpr uint32_t MERGE_CAP = 262144;
+    constexpr uint32_t MERGE_MASK = MERGE_CAP - 1;
+    std::vector<MergeEntry> merge_table(MERGE_CAP);
+
+    for (size_t t = 0; t < num_threads; ++t) {
+        auto& td = thread_data[t];
+        for (int h = 0; h < (int)td.hours.size(); ++h) {
+            for (int e = 0; e < (int)td.endpoints.size(); ++e) {
+                size_t g_idx = (size_t)h * MAX_EP + e;
+                auto& grp = td.groups[g_idx];
+                if (!grp.latencies.empty()) {
+                    const std::string& hr = td.hours[h];
+                    const std::string& ep = td.endpoints[e];
+                    uint64_t hsh = FastStringMap::hash_bytes(hr.data(), hr.size());
+                    hsh ^= FastStringMap::hash_bytes(ep.data(), ep.size()) + 0x9e3779b97f4a7c15ULL + (hsh << 6) + (hsh >> 2);
+                    if (hsh == 0) hsh = 1;
+
+                    uint32_t s_idx = (uint32_t)hsh & MERGE_MASK;
+                    int found_idx = -1;
+                    while (merge_table[s_idx].hash != 0) {
+                        if (merge_table[s_idx].hash == hsh) {
+                            int g = merge_table[s_idx].group_idx;
+                            if (out_groups[g].hour == hr && out_groups[g].endpoint == ep) {
+                                found_idx = g;
+                                break;
+                            }
+                        }
+                        s_idx = (s_idx + 1) & MERGE_MASK;
+                    }
+
+                    if (found_idx == -1) {
+                        found_idx = (int)out_groups.size();
+                        out_groups.push_back({hr, ep, std::move(grp.latencies), grp.errors});
+                        merge_table[s_idx].hash = hsh;
+                        merge_table[s_idx].group_idx = found_idx;
+                    } else {
+                        auto& target = out_groups[found_idx];
+                        target.latencies.insert(target.latencies.end(), grp.latencies.begin(), grp.latencies.end());
+                        target.errors += grp.errors;
+                    }
+                }
+            }
         }
     }
 
-    std::string out_path = out_dir + "/summary.txt";
-    std::ofstream ofs(out_path, std::ios::binary);
+    std::sort(out_groups.begin(), out_groups.end(), [](const OutGroup& a, const OutGroup& b) {
+        if (a.hour != b.hour) return a.hour < b.hour;
+        return a.endpoint < b.endpoint;
+    });
 
-    for (auto& [key, grp] : merged) {
-        const std::string& hour = key.first;
-        const std::string& endpoint = key.second;
+    std::string out_path = out_dir + "/summary.txt";
+    FILE* fp = fopen(out_path.c_str(), "wb");
+    if (!fp) return 1;
+
+    char out_buf[1048576];
+    setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
+
+    char line_buf[2048];
+    for (auto& grp : out_groups) {
         auto& lat = grp.latencies;
         size_t n = lat.size();
         if (n == 0) continue;
@@ -214,10 +331,12 @@ int main(int argc, char** argv) {
 
         uint64_t ppm = (uint64_t)grp.errors * 1000000ULL / n;
 
-        ofs << hour << ":00:00Z " << endpoint << " " << n << " "
-            << p50 << " " << p95 << " " << p99 << " "
-            << grp.errors << " " << ppm << "\n";
+        int len = snprintf(line_buf, sizeof(line_buf), "%s:00:00Z %s %zu %u %u %u %u %llu\n",
+                           grp.hour.c_str(), grp.endpoint.c_str(), n,
+                           p50, p95, p99, grp.errors, (unsigned long long)ppm);
+        fwrite(line_buf, 1, len, fp);
     }
+    fclose(fp);
 
     return 0;
 }

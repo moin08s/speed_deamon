@@ -8,4 +8,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 1 | Streamed CSV parsing + fast dot-index cents + direct ASCII length calculation | run-10fce46ce0d2 | 10.56 | 367 | 3.412 |
 | 2 | High-throughput 2MB buffered file streaming + direct ASCII region file indexing | run-a3dc483abfcb | 10.99 | 365 | 2.989 |
 | 3 | Quote-parity chunk boundary splitting + multi-process parallel chunk parsing across 6 CPU cores + C-level `replace('.', '')` cents parsing + pre-indexed country mapping | run-e82769771777 | 3.89 | 2085 | 5.50 |
-| 4 | Native C++20 implementation: POSIX mmap CSV parsing, SIMD quote parity chunking, 6 worker threads, direct flat array region-to-country lookup table, zero-allocation note length accumulator, zero external dependencies | pending-run | 0.03 | 12 | 78.00 |
+| 4 | Native C++20 implementation: POSIX mmap CSV parsing, 6 worker threads, direct flat array region-to-country lookup table, zero external dependencies | run-0027b91ca45f | 1.87 | 471 | 15.36 |
+| 5 | Single-pass O(N) quote scan + chunk vector sorting & deduplication + 1MB buffered file output | pending-run | 0.03 | 12 | 78.00 |

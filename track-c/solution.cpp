@@ -4,7 +4,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <map>
 #include <thread>
 #include <algorithm>
@@ -75,7 +74,7 @@ struct CountryStats {
     bool has_cents = false;
     int64_t sum_name_len = 0;
     int64_t sum_note_len = 0;
-    std::unordered_set<std::string> unique_names;
+    std::vector<std::string> names;
 };
 
 inline int64_t parse_field_int(const char*& p, const char* limit) {
@@ -100,7 +99,7 @@ inline void parse_field_string(const char*& p, const char* limit, std::string& o
     utf8_len = 0;
     if (p >= limit) return;
     if (*p == '"') {
-        p++; // skip open quote
+        p++;
         while (p < limit) {
             if (*p == '"') {
                 if (p + 1 < limit && *(p + 1) == '"') {
@@ -108,7 +107,7 @@ inline void parse_field_string(const char*& p, const char* limit, std::string& o
                     utf8_len++;
                     p += 2;
                 } else {
-                    p++; // closing quote
+                    p++;
                     break;
                 }
             } else {
@@ -134,14 +133,14 @@ inline size_t parse_field_len_only(const char*& p, const char* limit) {
     size_t utf8_len = 0;
     if (p >= limit) return 0;
     if (*p == '"') {
-        p++; // skip open quote
+        p++;
         while (p < limit) {
             if (*p == '"') {
                 if (p + 1 < limit && *(p + 1) == '"') {
                     utf8_len++;
                     p += 2;
                 } else {
-                    p++; // closing quote
+                    p++;
                     break;
                 }
             } else {
@@ -206,7 +205,6 @@ void parse_chunk(const char* buf, size_t start, size_t end, bool is_first,
     const char* limit = buf + end;
 
     if (is_first) {
-        // Skip header
         if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
             p += 3;
         }
@@ -247,7 +245,14 @@ void parse_chunk(const char* buf, size_t start, size_t end, bool is_first,
         }
         cs.sum_name_len += name_len;
         cs.sum_note_len += note_len;
-        cs.unique_names.insert(name_str);
+        cs.names.push_back(name_str);
+    }
+
+    for (auto& cs : stats) {
+        if (!cs.names.empty()) {
+            std::sort(cs.names.begin(), cs.names.end());
+            cs.names.erase(std::unique(cs.names.begin(), cs.names.end()), cs.names.end());
+        }
     }
 }
 
@@ -274,13 +279,10 @@ int main(int argc, char** argv) {
 
     std::string regions_path = data_dir + "/regions.csv";
     std::ifstream rf(regions_path);
-    if (!rf) {
-        std::cerr << "Failed to open " << regions_path << "\n";
-        return 1;
-    }
+    if (!rf) return 1;
 
     std::string line;
-    std::getline(rf, line); // header
+    std::getline(rf, line);
 
     std::vector<std::string> countries;
     std::unordered_map<std::string, int16_t> country_to_id;
@@ -321,10 +323,7 @@ int main(int argc, char** argv) {
 
     std::string records_path = data_dir + "/records.csv";
     MappedFile mf;
-    if (!mf.open(records_path.c_str())) {
-        std::cerr << "Failed to open " << records_path << "\n";
-        return 1;
-    }
+    if (!mf.open(records_path.c_str())) return 1;
 
     if (mf.size == 0) {
         std::string out_path = out_dir + "/aggregates.txt";
@@ -336,26 +335,22 @@ int main(int argc, char** argv) {
     std::vector<size_t> split_points;
     split_points.push_back(0);
 
+    size_t running_quotes = 0;
+    size_t scan_idx = 0;
     for (size_t i = 1; i < num_threads; ++i) {
         size_t target = i * (mf.size / num_threads);
-        size_t idx = target;
-        while (idx < mf.size) {
-            const char* nl = (const char*)memchr(mf.data + idx, '\n', mf.size - idx);
-            if (!nl) {
-                idx = mf.size;
+        while (scan_idx < target && scan_idx < mf.size) {
+            if (mf.data[scan_idx] == '"') running_quotes++;
+            scan_idx++;
+        }
+        while (scan_idx < mf.size) {
+            if (mf.data[scan_idx] == '"') running_quotes++;
+            if (mf.data[scan_idx] == '\n' && (running_quotes % 2 == 0)) {
+                split_points.push_back(scan_idx + 1);
+                scan_idx++;
                 break;
             }
-            size_t pos = nl - mf.data;
-            // Check quote parity up to pos
-            size_t quotes = 0;
-            for (size_t k = 0; k < pos; ++k) {
-                if (mf.data[k] == '"') quotes++;
-            }
-            if (quotes % 2 == 0) {
-                split_points.push_back(pos + 1);
-                break;
-            }
-            idx = pos + 1;
+            scan_idx++;
         }
     }
     split_points.push_back(mf.size);
@@ -374,7 +369,6 @@ int main(int argc, char** argv) {
         t.join();
     }
 
-    // Merge into std::map for alphabetical ordering by country name
     std::map<std::string, CountryStats> final_map;
     for (size_t i = 0; i < countries.size(); ++i) {
         CountryStats combined;
@@ -394,22 +388,35 @@ int main(int argc, char** argv) {
             }
             combined.sum_name_len += ts.sum_name_len;
             combined.sum_note_len += ts.sum_note_len;
-            combined.unique_names.insert(ts.unique_names.begin(), ts.unique_names.end());
+            combined.names.insert(combined.names.end(), ts.names.begin(), ts.names.end());
         }
         if (combined.count > 0) {
+            std::sort(combined.names.begin(), combined.names.end());
+            combined.names.erase(std::unique(combined.names.begin(), combined.names.end()), combined.names.end());
             final_map[countries[i]] = std::move(combined);
         }
     }
 
     std::string out_path = out_dir + "/aggregates.txt";
-    std::ofstream ofs(out_path, std::ios::binary);
+    FILE* fp = fopen(out_path.c_str(), "wb");
+    if (!fp) return 1;
 
+    char out_buf[1048576];
+    setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
+
+    char line_buf[2048];
     for (auto& [country, cs] : final_map) {
-        ofs << country << " " << cs.count << " " << cs.sum_rec_id << " "
-            << format_cents(cs.sum_cents) << " " << format_cents(cs.min_cents) << " "
-            << format_cents(cs.max_cents) << " " << cs.unique_names.size() << " "
-            << cs.sum_name_len << " " << cs.sum_note_len << "\n";
+        std::string s_cents = format_cents(cs.sum_cents);
+        std::string s_min = format_cents(cs.min_cents);
+        std::string s_max = format_cents(cs.max_cents);
+
+        int len = snprintf(line_buf, sizeof(line_buf), "%s %lld %lld %s %s %s %zu %lld %lld\n",
+                           country.c_str(), (long long)cs.count, (long long)cs.sum_rec_id,
+                           s_cents.c_str(), s_min.c_str(), s_max.c_str(),
+                           cs.names.size(), (long long)cs.sum_name_len, (long long)cs.sum_note_len);
+        fwrite(line_buf, 1, len, fp);
     }
+    fclose(fp);
 
     return 0;
 }

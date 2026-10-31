@@ -2,7 +2,6 @@
 #include <fstream>
 #include <vector>
 #include <string>
-#include <queue>
 #include <thread>
 #include <algorithm>
 #include <cstdint>
@@ -140,11 +139,15 @@ void load_graph(const char* path, CSRGraph& g) {
     }
 }
 
+using Element = std::pair<uint64_t, uint32_t>; // (distance, node)
+
 struct WorkerState {
     std::vector<uint64_t> dist_f;
     std::vector<uint64_t> dist_b;
     std::vector<uint32_t> tag_f;
     std::vector<uint32_t> tag_b;
+    std::vector<Element> hf;
+    std::vector<Element> hb;
     uint32_t cur_tag = 1;
 
     void init(size_t n) {
@@ -152,11 +155,11 @@ struct WorkerState {
         dist_b.resize(n);
         tag_f.assign(n, 0);
         tag_b.assign(n, 0);
+        hf.reserve(4096);
+        hb.reserve(4096);
         cur_tag = 1;
     }
 };
-
-using Element = std::pair<uint64_t, uint32_t>; // (distance, node)
 
 int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) {
     if (s == t) return 0;
@@ -175,22 +178,24 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
     ws.tag_b[t] = tag;
     ws.dist_b[t] = 0;
 
-    std::priority_queue<Element, std::vector<Element>, std::greater<Element>> hf;
-    std::priority_queue<Element, std::vector<Element>, std::greater<Element>> hb;
+    ws.hf.clear();
+    ws.hb.clear();
 
-    hf.push({0, s});
-    hb.push({0, t});
+    ws.hf.push_back({0, s});
+    ws.hb.push_back({0, t});
 
     uint64_t best = UINT64_MAX;
 
-    while (!hf.empty() && !hb.empty()) {
-        if (hf.top().first + hb.top().first >= best) {
+    while (!ws.hf.empty() && !ws.hb.empty()) {
+        if (ws.hf.front().first + ws.hb.front().first >= best) {
             break;
         }
 
-        if (hf.size() <= hb.size()) {
-            auto [d, u] = hf.top();
-            hf.pop();
+        if (ws.hf.size() <= ws.hb.size()) {
+            std::pop_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
+            auto [d, u] = ws.hf.back();
+            ws.hf.pop_back();
+
             if (d > ws.dist_f[u]) continue;
 
             uint32_t st = g.fwd_head[u];
@@ -202,7 +207,8 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
                     if (ws.tag_f[v] != tag || nd < ws.dist_f[v]) {
                         ws.tag_f[v] = tag;
                         ws.dist_f[v] = nd;
-                        hf.push({nd, v});
+                        ws.hf.push_back({nd, v});
+                        std::push_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
                         if (ws.tag_b[v] == tag) {
                             uint64_t cand = nd + ws.dist_b[v];
                             if (cand < best) best = cand;
@@ -211,8 +217,10 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
                 }
             }
         } else {
-            auto [d, u] = hb.top();
-            hb.pop();
+            std::pop_heap(ws.hb.begin(), ws.hb.end(), std::greater<Element>());
+            auto [d, u] = ws.hb.back();
+            ws.hb.pop_back();
+
             if (d > ws.dist_b[u]) continue;
 
             uint32_t st = g.bwd_head[u];
@@ -224,7 +232,8 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
                     if (ws.tag_b[v] != tag || nd < ws.dist_b[v]) {
                         ws.tag_b[v] = tag;
                         ws.dist_b[v] = nd;
-                        hb.push({nd, v});
+                        ws.hb.push_back({nd, v});
+                        std::push_heap(ws.hb.begin(), ws.hb.end(), std::greater<Element>());
                         if (ws.tag_f[v] == tag) {
                             uint64_t cand = nd + ws.dist_f[v];
                             if (cand < best) best = cand;
@@ -291,13 +300,20 @@ int main(int argc, char** argv) {
     }
 
     std::string out_path = out_dir + "/distances.txt";
-    std::ofstream ofs(out_path, std::ios::binary);
+    FILE* fp = fopen(out_path.c_str(), "wb");
+    if (!fp) return 1;
 
+    char out_buf[1048576];
+    setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
+
+    char num_str[32];
     for (size_t t = 0; t < num_threads; ++t) {
         for (int64_t ans : thread_results[t]) {
-            ofs << ans << "\n";
+            int len = snprintf(num_str, sizeof(num_str), "%lld\n", (long long)ans);
+            fwrite(num_str, 1, len, fp);
         }
     }
+    fclose(fp);
 
     return 0;
 }
