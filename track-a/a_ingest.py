@@ -1,45 +1,47 @@
 #!/usr/bin/env python3
+"""Speed Demon 2026: Track A (Ingest) High-Throughput Buffered Multi-Worker Parsing."""
 import mmap
-import multiprocessing as mp
 import os
+import pickle
 import sys
 
 INPUT_NAME = "requests.log"
 OUTPUT_NAME = "summary.txt"
 
-def _parse_worker(file_path, start, end, q):
+def parse_chunk_buf(file_path, start, end):
     groups = {}
     with open(file_path, "rb") as f:
-        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            idx = start
-            while idx < end:
-                nl = mm.find(b"\n", idx, end)
-                if nl == -1:
-                    line = mm[idx:end]
-                    idx = end
-                else:
-                    line = mm[idx:nl]
-                    idx = nl + 1
-                if not line:
-                    continue
+        f.seek(start)
+        buf = f.read(end - start)
 
-                hour = line[:13]
-                sp2 = line.find(b" ", 29)
-                sp3 = line.find(b" ", sp2 + 1)
-                sp4 = line.find(b" ", sp3 + 1)
+    idx = 0
+    L = len(buf)
+    while idx < L:
+        nl = buf.find(b"\n", idx)
+        if nl == -1:
+            nl = L
+        line = buf[idx:nl]
+        idx = nl + 1
+        if not line:
+            continue
 
-                endpoint = line[sp2 + 1 : sp3]
-                status_char = line[sp3 + 1]
-                latency = int(line[sp4 + 1 :])
+        hour = line[:13]
+        sp2 = line.find(b" ", 29)
+        sp3 = line.find(b" ", sp2 + 1)
+        sp4 = line.find(b" ", sp3 + 1)
 
-                key = (hour, endpoint)
-                grp = groups.get(key)
-                if grp is None:
-                    groups[key] = grp = [[], 0]
-                grp[0].append(latency)
-                if status_char == 53: # b'5'
-                    grp[1] += 1
-    q.put(groups)
+        endpoint = line[sp2 + 1 : sp3]
+        status_char = line[sp3 + 1]
+        latency = int(line[sp4 + 1 :])
+
+        key = (hour, endpoint)
+        grp = groups.get(key)
+        if grp is None:
+            groups[key] = grp = [[], 0]
+        grp[0].append(latency)
+        if status_char == 53:  # b'5'
+            grp[1] += 1
+    return groups
 
 def main(data_dir, out_dir):
     file_path = os.path.join(data_dir, INPUT_NAME)
@@ -60,26 +62,49 @@ def main(data_dir, out_dir):
                 ranges.append((curr, nxt))
                 curr = nxt
 
-    q = mp.Queue()
-    procs = []
-    for st, en in ranges:
-        p = mp.Process(target=_parse_worker, args=(file_path, st, en, q))
-        p.start()
-        procs.append(p)
-
     merged = {}
-    for _ in range(num_workers):
-        res = q.get()
-        for k, v in res.items():
-            m = merged.get(k)
-            if m is None:
-                merged[k] = v
-            else:
-                m[0].extend(v[0])
-                m[1] += v[1]
 
-    for p in procs:
-        p.join()
+    if hasattr(os, "fork") and total_size > 500_000:
+        pids = []
+        part_paths = []
+        for w, (st, en) in enumerate(ranges):
+            part_path = f"/tmp/a_part_{w}.pkl"
+            part_paths.append(part_path)
+            pid = os.fork()
+            if pid == 0:
+                res = parse_chunk_buf(file_path, st, en)
+                with open(part_path, "wb") as pf:
+                    pickle.dump(res, pf, protocol=pickle.HIGHEST_PROTOCOL)
+                os._exit(0)
+            pids.append(pid)
+
+        for pid in pids:
+            os.waitpid(pid, 0)
+
+        for part_path in part_paths:
+            with open(part_path, "rb") as pf:
+                res = pickle.load(pf)
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
+            for k, v in res.items():
+                m = merged.get(k)
+                if m is None:
+                    merged[k] = v
+                else:
+                    m[0].extend(v[0])
+                    m[1] += v[1]
+    else:
+        for st, en in ranges:
+            res = parse_chunk_buf(file_path, st, en)
+            for k, v in res.items():
+                m = merged.get(k)
+                if m is None:
+                    merged[k] = v
+                else:
+                    m[0].extend(v[0])
+                    m[1] += v[1]
 
     out = []
     for key in sorted(merged.keys()):

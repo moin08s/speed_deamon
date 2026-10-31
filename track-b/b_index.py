@@ -2,9 +2,9 @@
 """Speed Demon 2026: Track B (Index) Fast Multi-Worker Query Answering with Strict Output Ordering."""
 import array
 import mmap
-import multiprocessing as mp
 import os
 import re
+import shutil
 import sys
 
 DOCS_FILE = "docs.txt"
@@ -13,6 +13,10 @@ RESULTS_FILE = "results.txt"
 
 TOKEN_RE = re.compile(rb"[a-z0-9]+")
 EMPTY = frozenset()
+
+IS_ALNUM = bytearray(256)
+for c in b"abcdefghijklmnopqrstuvwxyz0123456789":
+    IS_ALNUM[c] = 1
 
 def tokenize(text: bytes):
     return TOKEN_RE.findall(text.lower())
@@ -29,6 +33,53 @@ def run_bool(index, words):
             res = res - post
     return res
 
+def match_phrase_fast(text: bytes, terms: list[bytes]) -> bool:
+    text_lower = text.lower()
+    L = len(text_lower)
+    first_term = terms[0]
+    len_first = len(first_term)
+    
+    pos = 0
+    while pos < L:
+        idx = text_lower.find(first_term, pos)
+        if idx == -1:
+            return False
+        
+        # Check start boundary of first term
+        if idx > 0 and IS_ALNUM[text_lower[idx - 1]]:
+            pos = idx + 1
+            continue
+        
+        # Check end boundary of first term
+        end_idx = idx + len_first
+        if end_idx < L and IS_ALNUM[text_lower[end_idx]]:
+            pos = idx + 1
+            continue
+        
+        # Check remaining terms
+        cur_pos = end_idx
+        matched_all = True
+        for t in terms[1:]:
+            while cur_pos < L and not IS_ALNUM[text_lower[cur_pos]]:
+                cur_pos += 1
+            if cur_pos >= L:
+                matched_all = False
+                break
+            len_t = len(t)
+            if cur_pos + len_t > L or text_lower[cur_pos : cur_pos + len_t] != t:
+                matched_all = False
+                break
+            after_t = cur_pos + len_t
+            if after_t < L and IS_ALNUM[text_lower[after_t]]:
+                matched_all = False
+                break
+            cur_pos = after_t
+        
+        if matched_all:
+            return True
+        pos = idx + 1
+    return False
+
 def run_phrase(index, mm, offsets, terms):
     cands = index.get(terms[0], EMPTY)
     for t in terms[1:]:
@@ -36,19 +87,17 @@ def run_phrase(index, mm, offsets, terms):
         if not cands:
             return []
 
-    k = len(terms)
     matches = []
     for doc_id in sorted(cands):
         st = offsets[doc_id * 2]
         ln = offsets[doc_id * 2 + 1]
-        toks = tokenize(mm[st : st + ln])
-        for i in range(len(toks) - k + 1):
-            if toks[i : i + k] == terms:
-                matches.append(doc_id)
-                break
+        if match_phrase_fast(mm[st : st + ln], terms):
+            matches.append(doc_id)
     return matches
 
 def format_result(doc_ids):
+    if not doc_ids:
+        return "0 0"
     ids = sorted(doc_ids) if not isinstance(doc_ids, list) else doc_ids
     m = min(10, len(ids))
     parts = [str(len(ids)), str(sum(ids))]
@@ -56,20 +105,16 @@ def format_result(doc_ids):
         parts.append(str(ids[i]))
     return " ".join(parts)
 
-def query_worker(chunk_idx, docs_path, offsets, frozen_index, query_chunk, q):
-    results = []
-    with open(docs_path, "rb") as f:
-        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            for line in query_chunk:
-                kind, _, rest = line.partition(b" ")
-                if kind == b"BOOL":
-                    res = run_bool(frozen_index, rest.split(b" "))
-                    results.append(format_result(res) + "\n")
-                elif kind == b"PHRASE":
-                    terms = tokenize(rest)
-                    res = run_phrase(frozen_index, mm, offsets, terms)
-                    results.append(format_result(res) + "\n")
-    q.put((chunk_idx, results))
+def answer_query_line(line, frozen_index, mm, offsets):
+    kind, _, rest = line.partition(b" ")
+    if kind == b"BOOL":
+        res = run_bool(frozen_index, rest.split(b" "))
+        return format_result(res)
+    elif kind == b"PHRASE":
+        terms = TOKEN_RE.findall(rest.lower())
+        res = run_phrase(frozen_index, mm, offsets, terms)
+        return format_result(res)
+    return "0 0"
 
 def main(data_dir, out_dir):
     docs_path = os.path.join(data_dir, DOCS_FILE)
@@ -89,7 +134,7 @@ def main(data_dir, out_dir):
                 for t in parts[0::2]:
                     needed_terms.add(t)
             elif kind == b"PHRASE":
-                for t in tokenize(rest):
+                for t in TOKEN_RE.findall(rest.lower()):
                     needed_terms.add(t)
 
     index = {t: set() for t in needed_terms}
@@ -118,35 +163,53 @@ def main(data_dir, out_dir):
     frozen_index = {t: frozenset(ids) for t, ids in index.items() if ids}
     del index
 
-    num_workers = 4
     total_q = len(raw_queries)
-    chunk_size = (total_q + num_workers - 1) // num_workers
-    chunks = [raw_queries[i : i + chunk_size] for i in range(0, total_q, chunk_size)]
-
-    q = mp.Queue()
-    procs = []
-    for i, c in enumerate(chunks):
-        p = mp.Process(target=query_worker, args=(i, docs_path, offsets, frozen_index, c, q))
-        p.start()
-        procs.append(p)
-
-    results_dict = {}
-    for _ in chunks:
-        idx, res = q.get()
-        results_dict[idx] = res
-
-    for p in procs:
-        p.join()
-
-    # Reassemble strictly in input order
-    flattened = []
-    for i in range(len(chunks)):
-        flattened.extend(results_dict[i])
-
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, RESULTS_FILE)
-    with open(out_file, "w", encoding="utf-8", newline="\n") as f:
-        f.writelines(flattened)
+
+    if hasattr(os, "fork") and total_q > 500:
+        num_workers = 6
+        chunk_size = (total_q + num_workers - 1) // num_workers
+        pids = []
+        part_paths = []
+        for w in range(num_workers):
+            start = w * chunk_size
+            end = min(total_q, start + chunk_size)
+            if start >= end:
+                break
+            part_path = f"/tmp/b_part_{w}.txt"
+            part_paths.append(part_path)
+            pid = os.fork()
+            if pid == 0:
+                worker_lines = []
+                with open(docs_path, "rb") as f:
+                    with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                        for q_idx in range(start, end):
+                            worker_lines.append(answer_query_line(raw_queries[q_idx], frozen_index, mm, offsets) + "\n")
+                with open(part_path, "w", encoding="ascii", newline="\n") as pf:
+                    pf.writelines(worker_lines)
+                os._exit(0)
+            pids.append(pid)
+
+        for pid in pids:
+            os.waitpid(pid, 0)
+
+        with open(out_file, "wb") as out_f:
+            for part_path in part_paths:
+                with open(part_path, "rb") as pf:
+                    shutil.copyfileobj(pf, out_f)
+                try:
+                    os.remove(part_path)
+                except OSError:
+                    pass
+    else:
+        results = []
+        with open(docs_path, "rb") as f:
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                for line in raw_queries:
+                    results.append(answer_query_line(line, frozen_index, mm, offsets) + "\n")
+        with open(out_file, "w", encoding="ascii", newline="\n") as f:
+            f.writelines(results)
 
 if __name__ == "__main__":
     data_dir = sys.argv[1] if len(sys.argv) > 1 else "/data"

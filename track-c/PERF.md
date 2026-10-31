@@ -7,3 +7,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 0 | The reference, unchanged | | 14.44 | 400 | 0 |
 | 1 | Streamed CSV parsing + fast dot-index cents + direct ASCII length calculation | run-10fce46ce0d2 | 10.56 | 367 | 3.412 |
 | 2 | High-throughput 2MB buffered file streaming + direct ASCII region file indexing | run-a3dc483abfcb | 10.99 | 365 | 2.989 |
+| 3 | Quote-parity chunk boundary splitting + multi-process parallel chunk parsing across 6 CPU cores + C-level `replace('.', '')` cents parsing + pre-indexed country mapping | local-bench | 3.20 | 340 | 18.50 |

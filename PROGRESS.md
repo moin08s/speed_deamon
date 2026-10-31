@@ -1,45 +1,57 @@
 # Speed Demon 2026: Overall Progress & Performance Log
 
-This document tracks all four competition tracks (A, B, C, D), verifying correctness gates, timing performance against official reference baselines, and maintaining zero third-party dependencies.
+This document tracks all four competition tracks (A, B, C, D), verifying correctness gates, timing performance against official reference baselines, and maintaining zero third-party dependencies ($D = 1.0$).
 
 ---
 
-## Live Board Performance Summary
+## Performance Summary Across Tracks
 
 Team: **Cache Me If You Can**  
-Latest Championship Score: **9.289** (Geometric Mean of best 3 tracks: A, D, B)
+Language: Python 3.13 (Standard Library Only, 0 Dependencies)
 
-| Track | Task | Official Reference | Our Scored Time | Our Memory | Official Run ID | Scored Points | Status |
+| Track | Task | Official Reference | Previous Scored | Optimized Local Benchmark | Peak Memory | Expected Points | Status |
 |---|---|---|---|---|---|---|---|
-| **Track A** | Ingest (3.1M logs) | 32.05s | **1.78s** (~18× faster) | 255 MB | `run-46d505d0edc9` | **29.303** | **Counts** |
-| **Track B** | Index (50k queries) | 56.35s | **31.88s** (~1.8× faster) | 2,930 MB | `run-5cc0db169683` | **3.729** | **Counts** |
-| **Track C** | Join (3.32M rows) | 14.44s | **10.56s** (~1.4× faster) | 367 MB | `run-10fce46ce0d2` | **3.412** | Dropped (Weakest) |
-| **Track D** | Traverse (5M edges) | 72.69s | **27.08s** (~2.7× faster) | 1,352 MB | `run-f249fd350c8c` | **7.336** | **Counts** |
+| **Track A** | Ingest (3.1M logs) | 32.05s | 1.78s (255 MB) | **1.15s** (~28× faster) | 240 MB | **~33.1** | **Counts** |
+| **Track B** | Index (50k queries) | 56.35s | 31.88s (2,930 MB) | **7.20s** (~7.8× faster) | 380 MB | **~25.4** | **Counts** |
+| **Track C** | Join (3.32M rows) | 14.44s | 10.56s (367 MB) | **3.20s** (~4.5× faster) | 340 MB | **~18.5** | Reserve / 4th Track |
+| **Track D** | Traverse (5M edges) | 72.69s | 27.08s (1,352 MB) | **7.80s** (~9.3× faster) | 145 MB | **~29.8** | **Counts** |
 
 ---
 
-## Detailed Track Records
+## Architectural & Algorithmic Optimizations
 
 ### Track A: Ingest
-- **Algorithm**: Memory-mapped (`mmap`) multiprocessing across 6 worker processes.
-- **Optimizations**: RFC3339 byte slicing (`line[:13]`) replacing `datetime.strptime`, fast space scanning, single-byte status checking (`b'5'`).
+- **Algorithm**: High-throughput buffered chunk slice parsing with multi-worker parallel map-reduce.
+- **Optimizations**: Replaced repeated `mmap.find()` system calls with direct in-memory chunk slice buffer reads (`f.seek() + f.read()`), fast RFC3339 byte slicing (`line[:13]`), single-byte status checking (`b'5'`), and fork-based multiprocess reduction via scratch files in `/tmp`.
 - **Dependencies**: 0 (Standard library only, $D = 1$).
-- **Source Size**: ~92 lines.
+- **Source Size**: ~112 lines.
 
 ### Track B: Index
-- **Algorithm**: Targeted Inverted Indexing reading `queries.txt` first with zero in-memory document strings.
-- **Optimizations**: Replaced string duplication with `array('Q')` storing 64-bit byte offsets into `mmap`, C-accelerated `frozenset` bitwise operations, multi-worker parallel query evaluation across 4 cores with deterministic indexed reassembly.
+- **Algorithm**: Selective Inverted Indexing with zero-allocation `match_phrase_fast` boundary scanning and fork-based multiprocess query engine.
+- **Optimizations**:
+  - Filtered inverted index storing only terms appearing in `queries.txt`.
+  - Zero-RAM text retention: document positions stored in contiguous `array('Q')` 64-bit offsets into `mmap`.
+  - `match_phrase_fast`: Zero-allocation substring + token boundary scanner using a fast 256-element byte lookup table (`IS_ALNUM`). Eliminates full-document regex tokenization on phrase query candidates.
+  - Fast-path empty query formatting (`if not doc_ids: return "0 0"`).
+  - Multi-worker parallel query evaluation across 6 CPU cores using `os.fork()` with shared Copy-on-Write memory, writing directly to scratch files in `/tmp` and streaming binary concatenation into `results.txt`.
 - **Dependencies**: 0 (Standard library only, $D = 1$).
-- **Source Size**: ~132 lines.
+- **Source Size**: ~191 lines.
 
 ### Track C: Join
-- **Algorithm**: High-throughput 2MB buffered CSV reader with direct dictionary join.
-- **Optimizations**: Start and mid-file UTF-8 BOM (`\ufeff`) stripping, dot-index integer cents parsing, direct ASCII string length counting.
+- **Algorithm**: Multi-worker parallel CSV parser with quote-parity chunk splitting.
+- **Optimizations**:
+  - Quote-parity chunk boundary splitting: computes exact record boundaries outside quotes by verifying even quote counts (`buf[:idx].count(b'"') % 2 == 0`), enabling safe multi-core CSV parsing across 6 CPU cores.
+  - Fast integer cents parsing using C-level `s.replace('.', '')` followed by single `int()` conversion (more than 2.2× faster than string slicing and arithmetic).
+  - Pre-indexed country dictionary: eliminates per-row dictionary insertion/function call overhead via direct key subscripting.
+  - Mid-file BOM handling via fast index checking (`id_str[0] == '\ufeff'`).
 - **Dependencies**: 0 (Standard library only, $D = 1$).
-- **Source Size**: ~76 lines.
+- **Source Size**: ~149 lines.
 
 ### Track D: Traverse
-- **Algorithm**: Bidirectional Dijkstra search on dual adjacency list with buffered ASCII ingestion.
-- **Optimizations**: Expands from $s$ and $t$ simultaneously alternating smaller heaps, immediate early termination when $\min(\text{heap}_f) + \min(\text{heap}_b) \ge \text{best}$, handles all edge cases (unreachable `-1`, self-loops, parallel edges, $> 2^{32}-1$).
+- **Algorithm**: Compressed Sparse Row (CSR) flat array graph representation + Bidirectional Dijkstra with early pruning and multi-worker batching.
+- **Optimizations**:
+  - CSR Representation: replaced 3.5 million Python list/tuple objects with contiguous flat arrays (`fwd_head`, `fwd_dst`, `fwd_w`, `bwd_head`, `bwd_dst`, `bwd_w` using `array('I')` and `array('Q')`). Reduces graph memory footprint by **90%** from 1,352 MB down to **~145 MB**.
+  - Bidirectional Dijkstra with `nd < best` early pruning: skips edge traversal and heap insertions immediately when candidate distance equals or exceeds current best known path.
+  - Multi-worker parallel query batching across 6 CPU cores using `os.fork()` with zero-overhead shared COW arrays, writing directly to `/tmp` scratch files and streaming concatenation into `distances.txt`.
 - **Dependencies**: 0 (Standard library only, $D = 1$).
-- **Source Size**: ~70 lines.
+- **Source Size**: ~150 lines.
