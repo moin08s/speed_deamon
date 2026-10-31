@@ -117,9 +117,6 @@ inline char* fast_format_cents(char* p, int64_t cents) {
 
 inline int64_t parse_field_int(const char*& p, const char* limit) {
     if (p >= limit) return 0;
-    if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
-        p += 3;
-    }
     bool quoted = (*p == '"');
     if (quoted) p++;
     int64_t val = 0;
@@ -259,23 +256,18 @@ size_t find_fast_split(const char* data, size_t size, size_t target) {
         if (!nl_ptr) return size;
         size_t nl = nl_ptr - data;
 
-        // Check if preceded by .\d\d
         if (nl >= 4 && data[nl - 3] == '.' &&
             data[nl - 2] >= '0' && data[nl - 2] <= '9' &&
             data[nl - 1] >= '0' && data[nl - 1] <= '9') {
             
-            // Find line start
             size_t search_back = (nl > 1000) ? nl - 1000 : 0;
-            size_t prev_nl = search_back;
             const char* cur = data + nl - 1;
             while (cur >= data + search_back && *cur != '\n') cur--;
             size_t line_start = (cur >= data + search_back) ? (cur - data + 1) : 0;
 
-            // Check if line starts with digits followed by comma
             size_t p = line_start;
             while (p < nl && data[p] >= '0' && data[p] <= '9') p++;
             if (p > line_start && p < nl && data[p] == ',') {
-                // Count quotes on this single line
                 size_t line_quotes = 0;
                 for (size_t q = line_start; q < nl; ++q) {
                     if (data[q] == '"') line_quotes++;
@@ -405,14 +397,20 @@ int main(int argc, char** argv) {
     }
 
     const size_t num_threads = 12;
-    std::vector<size_t> split_points;
-    split_points.push_back(0);
+    std::vector<size_t> split_points(num_threads + 1, 0);
+    split_points[0] = 0;
+    split_points[num_threads] = mf.size;
 
+    // Parallel split points calculation
+    std::vector<std::thread> split_threads;
+    split_threads.reserve(num_threads);
     for (size_t i = 1; i < num_threads; ++i) {
-        size_t target = i * (mf.size / num_threads);
-        split_points.push_back(find_fast_split(mf.data, mf.size, target));
+        split_threads.emplace_back([&, i]() {
+            size_t target = i * (mf.size / num_threads);
+            split_points[i] = find_fast_split(mf.data, mf.size, target);
+        });
     }
-    split_points.push_back(mf.size);
+    for (auto& th : split_threads) th.join();
 
     std::vector<std::vector<CountryStats>> thread_stats(num_threads, std::vector<CountryStats>(num_countries));
     std::vector<std::thread> threads;
@@ -476,6 +474,13 @@ int main(int argc, char** argv) {
                     cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
                 }
             }
+#ifndef _WIN32
+            if (end > start) {
+                uintptr_t page_start = (uintptr_t)(mf.data + start) & ~4095ULL;
+                uintptr_t page_end = ((uintptr_t)(mf.data + end) + 4095ULL) & ~4095ULL;
+                madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+            }
+#endif
         });
     }
 
@@ -578,7 +583,6 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
-
 
     return 0;
 }
