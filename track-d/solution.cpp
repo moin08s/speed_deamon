@@ -217,7 +217,7 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             break;
         }
 
-        if (ws.hf.size() <= ws.hb.size()) {
+        if (ws.hf.front().first <= ws.hb.front().first) {
             std::pop_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
             auto [d, u] = ws.hf.back();
             ws.hf.pop_back();

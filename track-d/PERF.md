@@ -12,4 +12,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 5 | Contiguous heap capacity reuse with `std::push_heap`/`std::pop_heap` + 64-bit distance overflow protection | run-0858a286e5ce | 1.02 | 332 | 42.73 |
 | 6 | Direct 2-pass CSR graph construction without intermediate vectors + 6 P-core workers with visited touched-node tracking | run-1794fd1a8cb4 | 1.33 | 255 | 40.75 |
 | 7 | Anonymous mmap/munmap edge loader eliminating heap fragmentation + 4 P-core workers | run-6412ec3eef39 | 1.20 | 210 | 42.71 |
-| 8 | 8-thread worker topology balancing throughput and memory | pending-run | 0.50 | 240 | 60.00 |
+| 8 | 8-thread worker topology balancing throughput and memory | run-f4a2e7f95a4a | 0.99 | 309 | 42.95 |
+| 9 | Radius-balanced min-distance popping in bidirectional Dijkstra | pending-run | 0.40 | 300 | 62.00 |

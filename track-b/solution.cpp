@@ -186,26 +186,28 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
     size_t len_first = first.size();
     if (len_first > L) return false;
 
+    char c0_low = first[0];
+    char c0_up = (c0_low >= 'a' && c0_low <= 'z') ? (char)(c0_low - ('a' - 'A')) : c0_low;
+
     size_t pos = 0;
     while (pos + len_first <= L) {
-        bool found = false;
         size_t idx = pos;
-        while (idx + len_first <= L) {
-            bool eq = true;
-            for (size_t k = 0; k < len_first; ++k) {
-                if (to_lower_char(text[idx + k]) != first[k]) {
-                    eq = false;
-                    break;
-                }
-            }
-            if (eq) {
-                found = true;
-                break;
-            }
+        while (idx + len_first <= L && text[idx] != c0_low && text[idx] != c0_up) {
             idx++;
         }
+        if (idx + len_first > L) return false;
 
-        if (!found) return false;
+        bool eq = true;
+        for (size_t k = 1; k < len_first; ++k) {
+            if (to_lower_char(text[idx + k]) != first[k]) {
+                eq = false;
+                break;
+            }
+        }
+        if (!eq) {
+            pos = idx + 1;
+            continue;
+        }
 
         if (idx > 0 && IS_ALNUM[(uint8_t)to_lower_char(text[idx - 1])]) {
             pos = idx + 1;
@@ -232,14 +234,14 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
                 matched_all = false;
                 break;
             }
-            bool eq = true;
+            bool eq_t = true;
             for (size_t k = 0; k < len_t; ++k) {
                 if (to_lower_char(text[cur_pos + k]) != term[k]) {
-                    eq = false;
+                    eq_t = false;
                     break;
                 }
             }
-            if (!eq) {
+            if (!eq_t) {
                 matched_all = false;
                 break;
             }
