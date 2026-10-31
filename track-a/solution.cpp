@@ -114,7 +114,6 @@ struct FastStringMap {
 };
 
 struct RawRecord {
-    uint16_t hid;
     uint16_t eid;
     uint32_t lat;
     uint8_t is_err;
@@ -125,15 +124,13 @@ struct ThreadParseData {
     FastStringMap ep_map;
     std::vector<std::string> hours;
     std::vector<std::string> endpoints;
-    std::vector<RawRecord> records;
-    std::vector<uint32_t> hour_offsets; // hour_offsets[h] is start index in records
+    std::vector<std::vector<RawRecord>> hour_records;
+    std::vector<int> remap_eid;
 };
 
 void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td) {
     const char* p = buf + start;
     const char* limit = buf + end;
-
-    td.records.reserve((end - start) / 40);
 
     int last_hid = -1;
     const char* last_hour_ptr = nullptr;
@@ -152,6 +149,10 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
             hid = td.hour_map.get_or_insert(p, 13);
             if (hid >= (int)td.hours.size()) {
                 td.hours.emplace_back(p, 13);
+            }
+            if (hid >= (int)td.hour_records.size()) {
+                td.hour_records.resize(hid + 1);
+                td.hour_records[hid].reserve(65536);
             }
             last_hid = hid;
             last_hour_ptr = p;
@@ -186,7 +187,7 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
             lat_ptr++;
         }
 
-        td.records.push_back({(uint16_t)hid, (uint16_t)eid, lat, is_err});
+        td.hour_records[hid].push_back({(uint16_t)eid, lat, is_err});
 
         while (lat_ptr < limit && *lat_ptr != '\n') lat_ptr++;
         p = (lat_ptr < limit) ? lat_ptr + 1 : limit;
@@ -293,45 +294,25 @@ int main(int argc, char** argv) {
 
     size_t num_eps = global_endpoints.size();
 
-    // Remap local hid and eid to global in parallel
-    threads.clear();
+    // Map global hour to local hour per thread
+    std::vector<std::vector<int>> global_to_local_hour(num_threads, std::vector<int>(num_hours, -1));
+
     for (size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&, t]() {
-            auto& td = parse_data[t];
-            std::vector<int> h_map(td.hours.size());
-            for (size_t h = 0; h < td.hours.size(); ++h) {
-                auto it = std::lower_bound(global_hours.begin(), global_hours.end(), td.hours[h]);
-                h_map[h] = (int)(it - global_hours.begin());
+        auto& td = parse_data[t];
+        for (size_t lh = 0; lh < td.hours.size(); ++lh) {
+            auto it = std::lower_bound(global_hours.begin(), global_hours.end(), td.hours[lh]);
+            if (it != global_hours.end() && *it == td.hours[lh]) {
+                int gh = (int)(it - global_hours.begin());
+                global_to_local_hour[t][gh] = (int)lh;
             }
+        }
 
-            std::vector<int> e_map(td.endpoints.size());
-            for (size_t e = 0; e < td.endpoints.size(); ++e) {
-                auto it = std::lower_bound(global_endpoints.begin(), global_endpoints.end(), td.endpoints[e]);
-                e_map[e] = (int)(it - global_endpoints.begin());
-            }
-
-            for (auto& rec : td.records) {
-                rec.hid = (uint16_t)h_map[rec.hid];
-                rec.eid = (uint16_t)e_map[rec.eid];
-            }
-
-            // O(N) counting sort on hour IDs
-            std::vector<uint32_t> counts(num_hours + 1, 0);
-            for (const auto& rec : td.records) {
-                counts[rec.hid + 1]++;
-            }
-            for (size_t h = 0; h < num_hours; ++h) {
-                counts[h + 1] += counts[h];
-            }
-            td.hour_offsets = counts;
-            std::vector<RawRecord> sorted_records(td.records.size());
-            for (const auto& rec : td.records) {
-                sorted_records[counts[rec.hid]++] = rec;
-            }
-            td.records = std::move(sorted_records);
-        });
+        td.remap_eid.resize(td.endpoints.size());
+        for (size_t le = 0; le < td.endpoints.size(); ++le) {
+            auto it = std::lower_bound(global_endpoints.begin(), global_endpoints.end(), td.endpoints[le]);
+            td.remap_eid[le] = (int)(it - global_endpoints.begin());
+        }
     }
-    for (auto& t : threads) t.join();
 
     // Phase 2: Parallel Reduction by Hour
     std::vector<std::string> thread_outputs(num_threads);
@@ -363,13 +344,14 @@ int main(int argc, char** argv) {
                 active_eps.clear();
 
                 for (size_t pt = 0; pt < num_threads; ++pt) {
-                    const auto& td = parse_data[pt];
-                    uint32_t r_start = td.hour_offsets[h];
-                    uint32_t r_end = td.hour_offsets[h + 1];
+                    int local_hid = global_to_local_hour[pt][h];
+                    if (local_hid < 0) continue;
 
-                    for (uint32_t idx = r_start; idx < r_end; ++idx) {
-                        const auto& rec = td.records[idx];
-                        uint32_t gid = rec.eid;
+                    const auto& recs = parse_data[pt].hour_records[local_hid];
+                    const auto& remap_eid = parse_data[pt].remap_eid;
+
+                    for (const auto& rec : recs) {
+                        uint32_t gid = remap_eid[rec.eid];
                         auto& ed = ep_data[gid];
                         if (ed.latencies.empty()) {
                             active_eps.push_back(gid);
