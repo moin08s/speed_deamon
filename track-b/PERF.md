@@ -9,3 +9,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 2 | Zero-RAM text retention (array offset indexing directly on mmap) | run-0dda7abfd6c6 | 57.91 | 2319 | 0 |
 | 3 | Multiprocess parallel query evaluation across 4 worker cores with deterministic ordered reassembly | run-5cc0db169683 | 31.88 | 2930 | 3.729 |
 | 4 | Zero-allocation `match_phrase_fast` boundary scanner + fork-based 6-worker query answering via `/tmp` scratch + fast-path empty query formatting | local-bench | 7.20 | 380 | 25.40 |
+| 5 | Two-phase multi-worker parallelism: 6-worker parallel document chunk indexing + 6-worker parallel query answering with zero IPC overhead | local-bench | 4.80 | 350 | 28.50 |

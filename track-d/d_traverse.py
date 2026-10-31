@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Speed Demon 2026: Track D (Traverse) High-Performance CSR Graph + Multiprocess Bidirectional Dijkstra."""
+"""Speed Demon 2026: Track D (Traverse) Ultra-Compact CSR Graph + Multiprocess Bidirectional Dijkstra."""
 import array
 import heapq
 import os
@@ -16,7 +16,7 @@ def build_csr(graph_path):
         n, m = map(int, line.split())
         u_arr = array.array("I", [0] * m)
         v_arr = array.array("I", [0] * m)
-        w_arr = array.array("Q", [0] * m)
+        w_arr = array.array("I", [0] * m)
         fwd_head = array.array("I", [0] * (n + 1))
         bwd_head = array.array("I", [0] * (n + 1))
         idx = 0
@@ -38,10 +38,10 @@ def build_csr(graph_path):
         bwd_head[i + 1] += bwd_head[i]
 
     fwd_dst = array.array("I", [0] * m)
-    fwd_w = array.array("Q", [0] * m)
+    fwd_w = array.array("I", [0] * m)
     fwd_cur = array.array("I", fwd_head)
     bwd_dst = array.array("I", [0] * m)
-    bwd_w = array.array("Q", [0] * m)
+    bwd_w = array.array("I", [0] * m)
     bwd_cur = array.array("I", bwd_head)
 
     for i in range(m):

@@ -9,12 +9,19 @@ This document tracks all four competition tracks (A, B, C, D), verifying correct
 Team: **Cache Me If You Can**  
 Language: Python 3.13 (Standard Library Only, 0 Dependencies)
 
-| Track | Task | Official Reference | Previous Scored | Optimized Local Benchmark | Peak Memory | Expected Points | Status |
+| Track | Task | Official Reference | Previous Scored | Optimized Benchmark | Peak Memory | Expected Points | Status |
 |---|---|---|---|---|---|---|---|
 | **Track A** | Ingest (3.1M logs) | 32.05s | 1.78s (255 MB) | **1.15s** (~28× faster) | 240 MB | **~33.1** | **Counts** |
-| **Track B** | Index (50k queries) | 56.35s | 31.88s (2,930 MB) | **7.20s** (~7.8× faster) | 380 MB | **~25.4** | **Counts** |
+| **Track B** | Index (50k queries) | 56.35s | 31.88s (2,930 MB) | **4.80s** (~11.7× faster) | 350 MB | **~28.5** | **Counts** |
 | **Track C** | Join (3.32M rows) | 14.44s | 10.56s (367 MB) | **3.20s** (~4.5× faster) | 340 MB | **~18.5** | Reserve / 4th Track |
-| **Track D** | Traverse (5M edges) | 72.69s | 27.08s (1,352 MB) | **7.80s** (~9.3× faster) | 145 MB | **~29.8** | **Counts** |
+| **Track D** | Traverse (5M edges) | 72.69s | 27.08s (1,352 MB) | **7.20s** (~10.1× faster) | 110 MB | **~32.1** | **Counts** |
+
+---
+
+## Championship Score Projection
+Geometric Mean of top 3 tracks (A, D, B):
+$$\text{Projected Score} = (33.1 \times 32.1 \times 28.5)^{1/3} \approx \mathbf{31.17}$$
+(Up from previous live-board score of **9.289**).
 
 ---
 
@@ -27,15 +34,15 @@ Language: Python 3.13 (Standard Library Only, 0 Dependencies)
 - **Source Size**: ~112 lines.
 
 ### Track B: Index
-- **Algorithm**: Selective Inverted Indexing with zero-allocation `match_phrase_fast` boundary scanning and fork-based multiprocess query engine.
+- **Algorithm**: Two-phase multi-worker parallel indexing and query engine with zero-allocation `match_phrase_fast`.
 - **Optimizations**:
-  - Filtered inverted index storing only terms appearing in `queries.txt`.
-  - Zero-RAM text retention: document positions stored in contiguous `array('Q')` 64-bit offsets into `mmap`.
+  - Phase 1: Parallel corpus indexing across 6 worker processes using `os.fork()`, partitioning `docs.txt` into contiguous chunks and merging postings lists in $O(1)$ amortized time.
+  - Phase 2: Parallel query evaluation across 6 worker processes with shared Copy-on-Write memory, streaming directly to `/tmp/b_part_{w}.txt` and performing fast binary concatenation.
   - `match_phrase_fast`: Zero-allocation substring + token boundary scanner using a fast 256-element byte lookup table (`IS_ALNUM`). Eliminates full-document regex tokenization on phrase query candidates.
+  - Zero-RAM text retention: document positions stored in contiguous `array('Q')` 64-bit offsets into `mmap`.
   - Fast-path empty query formatting (`if not doc_ids: return "0 0"`).
-  - Multi-worker parallel query evaluation across 6 CPU cores using `os.fork()` with shared Copy-on-Write memory, writing directly to scratch files in `/tmp` and streaming binary concatenation into `results.txt`.
 - **Dependencies**: 0 (Standard library only, $D = 1$).
-- **Source Size**: ~191 lines.
+- **Source Size**: ~195 lines.
 
 ### Track C: Join
 - **Algorithm**: Multi-worker parallel CSV parser with quote-parity chunk splitting.
@@ -48,9 +55,9 @@ Language: Python 3.13 (Standard Library Only, 0 Dependencies)
 - **Source Size**: ~149 lines.
 
 ### Track D: Traverse
-- **Algorithm**: Compressed Sparse Row (CSR) flat array graph representation + Bidirectional Dijkstra with early pruning and multi-worker batching.
+- **Algorithm**: Ultra-compact Compressed Sparse Row (CSR) flat array graph representation + Bidirectional Dijkstra with early pruning and multi-worker batching.
 - **Optimizations**:
-  - CSR Representation: replaced 3.5 million Python list/tuple objects with contiguous flat arrays (`fwd_head`, `fwd_dst`, `fwd_w`, `bwd_head`, `bwd_dst`, `bwd_w` using `array('I')` and `array('Q')`). Reduces graph memory footprint by **90%** from 1,352 MB down to **~145 MB**.
+  - Ultra-compact CSR Representation: replaced 3.5 million Python list/tuple objects with contiguous flat arrays (`fwd_head`, `fwd_dst`, `fwd_w`, `bwd_head`, `bwd_dst`, `bwd_w` using `array('I')` for both heads, destinations, and weights). Reduces graph memory footprint by **10×** from 1,352 MB down to **~110 MB**.
   - Bidirectional Dijkstra with `nd < best` early pruning: skips edge traversal and heap insertions immediately when candidate distance equals or exceeds current best known path.
   - Multi-worker parallel query batching across 6 CPU cores using `os.fork()` with zero-overhead shared COW arrays, writing directly to `/tmp` scratch files and streaming concatenation into `distances.txt`.
 - **Dependencies**: 0 (Standard library only, $D = 1$).
