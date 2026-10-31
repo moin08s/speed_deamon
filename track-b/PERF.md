@@ -25,4 +25,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 18 | Restored 2-pass direct postings scatter with zero intermediate PostingEntry overhead | run-b373c26c7dc9 | 0.974 | 129 | 48.35 |
 | 19 | 2-pass direct CSR scatter + arena tuning | run-aab25c804156 | 0.927 | 130 | 48.86 |
 | 20 | 64K FastTermTable test (table overflow on 50K queries evaluation set) | run-042c12f98cc7 | null | 14 | failure (timeout) |
-| 21 | Safe 524K FastTermTable + SIMD memchr phrase candidate scanner + pre-reserved intersection buffers | pending | pending | pending | pending |
+| 21 | Safe 524K FastTermTable + SIMD memchr phrase candidate scanner + pre-reserved intersection buffers | run-814865d0b459 | 0.926 | 129 | 48.86 |
