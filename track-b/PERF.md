@@ -17,4 +17,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 10 | Two-pass direct postings scatter eliminating intermediate PostingEntry vectors entirely | run-e400b71a8ae6 | 0.98 | 152 | 47.63 |
 | 11 | Vectorized first-char skip in match_phrase_fast | run-50cd5caf4908 | 0.97 | 154 | 47.66 |
 | 12 | Bitset-accelerated character boundary scan + contiguous string buffers | run-f51796761f47 | 0.96 | 153 | 47.78 |
-| 13 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + trim threshold | pending | pending | pending | pending |
+| 13 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + trim threshold | run-394989270c96 | 1.22 | 138 | 45.69 |
+| 14 | Single-pass inverted indexing + 256-byte CHAR_MAP lookup + monotonic thread postings merge (zero second pass) | pending | pending | pending | pending |

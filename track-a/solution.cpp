@@ -159,13 +159,17 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
             last_hour_ptr = p;
         }
 
-        // Method starts at p + 28
-        const char* m_scan = p + 28;
-        while (m_scan < limit && *m_scan != ' ') m_scan++;
-        if (m_scan >= limit) break;
-
-        // Endpoint starts at m_scan + 1
-        const char* ep_start = m_scan + 1;
+        // Fast method jump
+        const char* ep_start = nullptr;
+        if (p + 31 < limit && p[31] == ' ') ep_start = p + 32;
+        else if (p + 32 < limit && p[32] == ' ') ep_start = p + 33;
+        else if (p + 34 < limit && p[34] == ' ') ep_start = p + 35;
+        else {
+            const char* m_scan = p + 28;
+            while (m_scan < limit && *m_scan != ' ') m_scan++;
+            if (m_scan >= limit) break;
+            ep_start = m_scan + 1;
+        }
         const char* ep_end = ep_start;
         while (ep_end < limit && *ep_end != ' ') ep_end++;
         if (ep_end >= limit) break;
@@ -239,7 +243,7 @@ inline char* fast_u64(char* p, uint64_t val) {
 
 int main(int argc, char** argv) {
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 1);
+    mallopt(M_ARENA_MAX, 2);
     mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
     std::ios_base::sync_with_stdio(false);
@@ -374,7 +378,7 @@ int main(int argc, char** argv) {
                         if (rec.is_err) ed.errors++;
                     }
                     parse_data[pt].hour_records[local_hid].clear();
-                    parse_data[pt].hour_records[local_hid].shrink_to_fit();
+                    // shrink_to_fit removed
                 }
 
                 if (active_eps.empty()) continue;

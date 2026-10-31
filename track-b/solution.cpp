@@ -71,13 +71,14 @@ struct MappedFile {
     }
 };
 
-static uint8_t IS_ALNUM[256];
+static uint8_t CHAR_MAP[256];
 static void init_tables() {
     static bool inited = false;
     if (inited) return;
-    std::memset(IS_ALNUM, 0, 256);
-    for (char c = 'a'; c <= 'z'; ++c) IS_ALNUM[(uint8_t)c] = 1;
-    for (char c = '0'; c <= '9'; ++c) IS_ALNUM[(uint8_t)c] = 1;
+    std::memset(CHAR_MAP, 0, 256);
+    for (char c = '0'; c <= '9'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)c;
+    for (char c = 'a'; c <= 'z'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)c;
+    for (char c = 'A'; c <= 'Z'; ++c) CHAR_MAP[(uint8_t)c] = (uint8_t)(c + 32);
     inited = true;
 }
 
@@ -210,13 +211,13 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
             continue;
         }
 
-        if (idx > 0 && IS_ALNUM[(uint8_t)to_lower_char(text[idx - 1])]) {
+        if (idx > 0 && CHAR_MAP[(uint8_t)text[idx - 1]]) {
             pos = idx + 1;
             continue;
         }
 
         size_t end_idx = idx + len_first;
-        if (end_idx < L && IS_ALNUM[(uint8_t)to_lower_char(text[end_idx])]) {
+        if (end_idx < L && CHAR_MAP[(uint8_t)text[end_idx]]) {
             pos = idx + 1;
             continue;
         }
@@ -228,7 +229,7 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
             const std::string& term = terms[t];
             size_t len_t = term.size();
 
-            while (cur_pos < L && !IS_ALNUM[(uint8_t)to_lower_char(text[cur_pos])]) {
+            while (cur_pos < L && CHAR_MAP[(uint8_t)text[cur_pos]] == 0) {
                 cur_pos++;
             }
             if (cur_pos + len_t > L) {
@@ -247,7 +248,7 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
                 break;
             }
             size_t after_t = cur_pos + len_t;
-            if (after_t < L && IS_ALNUM[(uint8_t)to_lower_char(text[after_t])]) {
+            if (after_t < L && CHAR_MAP[(uint8_t)text[after_t]]) {
                 matched_all = false;
                 break;
             }
@@ -275,7 +276,7 @@ struct Query {
 
 int main(int argc, char** argv) {
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 1);
+    mallopt(M_ARENA_MAX, 2);
     mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
     std::ios_base::sync_with_stdio(false);
@@ -338,10 +339,10 @@ int main(int argc, char** argv) {
             const char* p = q_line_start + 7;
             std::string cur;
             while (p < q_line_end) {
-                while (p < q_line_end && !IS_ALNUM[(uint8_t)to_lower_char(*p)]) p++;
+                while (p < q_line_end && CHAR_MAP[(uint8_t)*p] == 0) p++;
                 if (p >= q_line_end) break;
                 cur.clear();
-                while (p < q_line_end && IS_ALNUM[(uint8_t)to_lower_char(*p)]) {
+                while (p < q_line_end && CHAR_MAP[(uint8_t)*p]) {
                     cur.push_back(to_lower_char(*p));
                     p++;
                 }
@@ -379,20 +380,20 @@ int main(int argc, char** argv) {
 
     struct ThreadIndex {
         std::vector<DocInfo> docs;
-        std::vector<uint32_t> term_counts;
+        std::vector<std::vector<uint32_t>> postings;
     };
 
     std::vector<ThreadIndex> thread_indices(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
-    // Pass 1: Count term frequencies and collect doc info without storing postings
+    // Single Pass: Parse docs and collect postings directly
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
             const char* p = mf.data + split_points[t];
             const char* limit = mf.data + split_points[t + 1];
             auto& t_idx = thread_indices[t];
-            t_idx.term_counts.assign(num_terms, 0);
+            t_idx.postings.resize(num_terms);
 
             std::vector<uint32_t> term_seen(num_terms, 0);
             uint32_t cur_epoch = 1;
@@ -423,12 +424,14 @@ int main(int argc, char** argv) {
                     }
                     const char* tp = text_start;
                     while (tp < line_end) {
-                        while (tp < line_end && !IS_ALNUM[(uint8_t)to_lower_char(*tp)]) tp++;
+                        while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
                         if (tp >= line_end) break;
                         const char* w_start = tp;
                         uint64_t h = 0xcbf29ce484222325ULL;
-                        while (tp < line_end && IS_ALNUM[(uint8_t)to_lower_char(*tp)]) {
-                            h = (h ^ (unsigned char)to_lower_char(*tp)) * 0x100000001b3ULL;
+                        while (tp < line_end) {
+                            uint8_t ch = CHAR_MAP[(uint8_t)*tp];
+                            if (ch == 0) break;
+                            h = (h ^ ch) * 0x100000001b3ULL;
                             tp++;
                         }
                         size_t w_len = tp - w_start;
@@ -436,7 +439,7 @@ int main(int argc, char** argv) {
                         if (term_id != -1) {
                             if (term_seen[term_id] != cur_epoch) {
                                 term_seen[term_id] = cur_epoch;
-                                t_idx.term_counts[term_id]++;
+                                t_idx.postings[term_id].push_back(doc_id);
                             }
                         }
                     }
@@ -449,85 +452,29 @@ int main(int argc, char** argv) {
 
     for (auto& th : threads) th.join();
 
-    // Compute global term offsets and thread partition offsets
+    // Assemble unified postings_data across monotonic thread ranges
     std::vector<uint32_t> term_offsets(num_terms + 1, 0);
-    std::vector<std::vector<uint32_t>> thread_start(num_threads, std::vector<uint32_t>(num_terms));
-
     for (size_t term_id = 0; term_id < num_terms; ++term_id) {
-        uint32_t cur = term_offsets[term_id];
+        uint32_t cnt = 0;
         for (size_t t = 0; t < num_threads; ++t) {
-            thread_start[t][term_id] = cur;
-            cur += thread_indices[t].term_counts[term_id];
+            cnt += (uint32_t)thread_indices[t].postings[term_id].size();
         }
-        term_offsets[term_id + 1] = cur;
-    }
-
-    // Free thread term_counts now
-    for (size_t t = 0; t < num_threads; ++t) {
-        thread_indices[t].term_counts.clear();
-        thread_indices[t].term_counts.shrink_to_fit();
+        term_offsets[term_id + 1] = term_offsets[term_id] + cnt;
     }
 
     uint32_t total_postings = term_offsets[num_terms];
     std::vector<uint32_t> postings_data(total_postings);
 
-    // Pass 2: Directly scatter into postings_data from memory-mapped file
-    threads.clear();
-    for (size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&, t]() {
-            const char* p = mf.data + split_points[t];
-            const char* limit = mf.data + split_points[t + 1];
-            auto& starts = thread_start[t];
-
-            std::vector<uint32_t> term_seen(num_terms, 0);
-            uint32_t cur_epoch = 1;
-
-            while (p < limit) {
-                const char* nl = (const char*)memchr(p, '\n', limit - p);
-                const char* line_end = nl ? nl : limit;
-                if (line_end > p && *(line_end - 1) == '\r') line_end--;
-
-                const char* tab = (const char*)memchr(p, '\t', line_end - p);
-                if (tab) {
-                    uint32_t doc_id = 0;
-                    const char* cur = p;
-                    while (cur < tab && *cur >= '0' && *cur <= '9') {
-                        doc_id = doc_id * 10 + (*cur - '0');
-                        cur++;
-                    }
-
-                    const char* text_start = tab + 1;
-                    if (cur_epoch == 0xFFFFFFF0) {
-                        std::fill(term_seen.begin(), term_seen.end(), 0);
-                        cur_epoch = 1;
-                    }
-                    const char* tp = text_start;
-                    while (tp < line_end) {
-                        while (tp < line_end && !IS_ALNUM[(uint8_t)to_lower_char(*tp)]) tp++;
-                        if (tp >= line_end) break;
-                        const char* w_start = tp;
-                        uint64_t h = 0xcbf29ce484222325ULL;
-                        while (tp < line_end && IS_ALNUM[(uint8_t)to_lower_char(*tp)]) {
-                            h = (h ^ (unsigned char)to_lower_char(*tp)) * 0x100000001b3ULL;
-                            tp++;
-                        }
-                        size_t w_len = tp - w_start;
-                        int term_id = term_table.find(w_start, w_len, h);
-                        if (term_id != -1) {
-                            if (term_seen[term_id] != cur_epoch) {
-                                term_seen[term_id] = cur_epoch;
-                                uint32_t slot = starts[term_id]++;
-                                postings_data[slot] = doc_id;
-                            }
-                        }
-                    }
-                    cur_epoch++;
-                }
-                p = nl ? nl + 1 : limit;
+    for (size_t term_id = 0; term_id < num_terms; ++term_id) {
+        uint32_t dest = term_offsets[term_id];
+        for (size_t t = 0; t < num_threads; ++t) {
+            const auto& post = thread_indices[t].postings[term_id];
+            if (!post.empty()) {
+                std::memcpy(&postings_data[dest], post.data(), post.size() * sizeof(uint32_t));
+                dest += (uint32_t)post.size();
             }
-        });
+        }
     }
-    for (auto& th : threads) th.join();
 
     uint32_t max_doc_id = 0;
     for (size_t t = 0; t < num_threads; ++t) {
@@ -548,8 +495,6 @@ int main(int argc, char** argv) {
     // Free thread indices immediately to minimize peak memory
     thread_indices.clear();
     thread_indices.shrink_to_fit();
-    thread_start.clear();
-    thread_start.shrink_to_fit();
 
     // Query helper: get postings slice for a term
     auto get_postings = [&](int term_id) -> std::pair<const uint32_t*, size_t> {

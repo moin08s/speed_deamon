@@ -16,4 +16,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 9 | Radius-balanced min-distance popping in bidirectional Dijkstra | run-111177654666 | 2.53 | 328 | 32.69 |
 | 10 | 12-thread symmetric Dijkstra with size-balanced frontier expansion | run-f4a2e7f95a4a | 0.99 | 309 | 42.95 |
 | 11 | Two-pass direct CSR scatter eliminating intermediate edges vector + early prune cutoff | run-513ca75256b0 | 1.22 | 267 | 42.66 |
-| 12 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + 6 P-core workers | pending | pending | pending | pending |
+| 12 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + 6 P-core workers | run-f767c903847c | 1.25 | 254 | 42.37 |
+| 13 | mallopt M_ARENA_MAX=2 to eliminate arena contention + 8-worker thread topology | pending | pending | pending | pending |

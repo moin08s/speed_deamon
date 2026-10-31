@@ -234,11 +234,12 @@ inline int64_t parse_field_cents(const char*& p, const char* limit) {
 
 int main(int argc, char** argv) {
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 1);
+    mallopt(M_ARENA_MAX, 2);
     mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
+
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
     std::string out_dir = (argc > 2) ? argv[2] : "/out";
@@ -382,7 +383,7 @@ int main(int argc, char** argv) {
 
             auto& stats = thread_stats[t];
             for (auto& cs : stats) {
-                cs.name_hashes.reserve(64);
+                cs.name_hashes.reserve(128);
             }
 
             const char* p = mf.data + start;
@@ -447,20 +448,14 @@ int main(int argc, char** argv) {
                 }
             }
 #endif
-
-            for (auto& cs : stats) {
-                if (!cs.name_hashes.empty()) {
-                    std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
-                    cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
-                }
-            }
         });
     }
 
     for (auto& th : threads) th.join();
     mf.close(); // Immediately unmap records.csv to drop page cache
 
-    // Phase 2: Parallel country reduction across 12 threads directly producing output strings
+
+    // Phase 2: Parallel country reduction across 12 threads using Fast Hash Set for O(1) deduplication (ZERO SORTS)
     std::vector<std::string> thread_outputs(num_threads);
     threads.clear();
     size_t c_chunk = (num_countries + num_threads - 1) / num_threads;
@@ -473,6 +468,11 @@ int main(int argc, char** argv) {
             std::string& out = thread_outputs[t];
             out.reserve((c_end - c_start) * 256);
             char line_buf[2048];
+
+            // Open-addressing hash set for deduplication
+            static constexpr size_t HSET_CAP = 65536;
+            static constexpr size_t HSET_MASK = HSET_CAP - 1;
+            std::vector<uint64_t> hset(HSET_CAP, 0);
 
             for (size_t cid = c_start; cid < c_end; ++cid) {
                 CountryStats combined;
@@ -492,14 +492,42 @@ int main(int argc, char** argv) {
                     }
                     combined.sum_name_len += ts.sum_name_len;
                     combined.sum_note_len += ts.sum_note_len;
-                    combined.name_hashes.insert(combined.name_hashes.end(), ts.name_hashes.begin(), ts.name_hashes.end());
                 }
 
                 if (combined.count == 0) continue;
 
-                std::sort(combined.name_hashes.begin(), combined.name_hashes.end());
-                combined.name_hashes.erase(std::unique(combined.name_hashes.begin(), combined.name_hashes.end()), combined.name_hashes.end());
-                size_t unique_names = combined.name_hashes.size();
+                // Deduplication
+                size_t unique_names = 0;
+                if (combined.count == 1) {
+                    unique_names = 1;
+                } else if (combined.count <= 16) {
+                    uint64_t small_arr[16];
+                    for (size_t pt = 0; pt < num_threads; ++pt) {
+                        for (uint64_t h : thread_stats[pt][cid].name_hashes) {
+                            for (size_t i = 0; i < unique_names; ++i) {
+                                if (small_arr[i] == h) goto small_seen;
+                            }
+                            small_arr[unique_names++] = h;
+                        small_seen:;
+                        }
+                    }
+                } else {
+                    // O(1) open addressing deduplication
+                    std::fill(hset.begin(), hset.end(), 0);
+                    for (size_t pt = 0; pt < num_threads; ++pt) {
+                        for (uint64_t h : thread_stats[pt][cid].name_hashes) {
+                            uint64_t key = h ? h : 1;
+                            size_t idx = key & HSET_MASK;
+                            while (hset[idx] != 0) {
+                                if (hset[idx] == key) goto already_seen;
+                                idx = (idx + 1) & HSET_MASK;
+                            }
+                            hset[idx] = key;
+                            unique_names++;
+                        already_seen:;
+                        }
+                    }
+                }
 
                 const std::string& cname = country_names[cid];
                 char* lp = line_buf;
@@ -543,6 +571,7 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
+
 
     return 0;
 }

@@ -15,3 +15,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 8 | Per-hour bucketed parsing to eliminate sorted_records vector + direct global-to-local indexing | run-d4f5949e00fa | 0.089 | 73 | 61.23 |
 | 9 | Scaled initial vector reservations from 64K to 4K and pre-reserved 64 entries on endpoint creation | run-2881745e8349 | 0.089 | 76 | 61.83 |
 | 10 | Immediate MADV_DONTNEED page cache release on log chunks + in-flight hour record reclamation + n<=64 insertion sort threshold | run-90677effdd8c | 0.084 | 56 | 63.75 |
+| 11 | glibc arena restriction (mallopt M_ARENA_MAX=1) | run-f86c01fe985e | 0.106 | 51 | 61.60 |
+| 12 | mallopt M_ARENA_MAX=2 avoiding lock serialization + fast-path HTTP method jumping + instant vector clearance | pending | pending | pending | pending |

@@ -291,7 +291,7 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
 
 int main(int argc, char** argv) {
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 1);
+    mallopt(M_ARENA_MAX, 2);
     mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
     std::ios_base::sync_with_stdio(false);
@@ -321,7 +321,7 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 6;
+    const size_t num_threads = 8;
     std::vector<std::string> thread_outputs(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
