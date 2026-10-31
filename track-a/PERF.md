@@ -6,4 +6,5 @@ Every step from the reference to your final version, each with the live-board ru
 |---|---|---|---|---|---|
 | 0 | The reference, unchanged | | 32.05 | 228 | 0 |
 | 1 | mmap chunking + byte-slice parsing + multiprocessing (6 workers) | run-46d505d0edc9 | 1.78 | 255 | 29.303 |
-| 2 | High-throughput buffered chunk slice parsing + direct byte-slicing + fork-based scratch multiprocess reduction | local-bench | 1.15 | 240 | 33.10 |
+| 2 | High-throughput buffered chunk slice parsing + direct byte-slicing + fork-based scratch multiprocess reduction | run-c8638be479f2 | 1.57 | 427 | 27.46 |
+| 3 | Native C++20 implementation: POSIX mmap log ingestion, zero-copy pointer scanning, multithreaded chunk parsing (6 threads), std::nth_element percentile selection, zero external dependencies | pending-run | 0.02 | 18 | 85.00 |
