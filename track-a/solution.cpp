@@ -152,7 +152,7 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
             }
             if (hid >= (int)td.hour_records.size()) {
                 td.hour_records.resize(hid + 1);
-                td.hour_records[hid].reserve(65536);
+                td.hour_records[hid].reserve(4096);
             }
             last_hid = hid;
             last_hour_ptr = p;
@@ -355,6 +355,7 @@ int main(int argc, char** argv) {
                         auto& ed = ep_data[gid];
                         if (ed.latencies.empty()) {
                             active_eps.push_back(gid);
+                            if (ed.latencies.capacity() == 0) ed.latencies.reserve(64);
                         }
                         ed.latencies.push_back(rec.lat);
                         if (rec.is_err) ed.errors++;
