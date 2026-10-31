@@ -30,4 +30,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 23 | Zero-allocation parallel counting reduction by hour with contiguous lat_pool + automatic endpoint sorting elimination | run-8fdfaaababdb | 0.076 | 38 | 65.94 |
 | 24 | Two-pass direct scatter test (two passes over 160MB input file incur redundant I/O) | run-8beba04f5e71 | 0.120 | 28 | 58.94 |
 | 25 | Restored single-pass streaming with contiguous lat_pool reduction | run-fc02c9b01c53 | 0.074 | 38 | 66.17 |
-| 26 | In-place parallel endpoint global ID remapping + elimination of remap_eid array lookup in reduction loops | pending | | | |
+| 26 | In-place parallel endpoint global ID remapping + elimination of remap_eid array lookup in reduction loops | run-31f4a65654a3 | 0.077 | 39 | 65.69 |
