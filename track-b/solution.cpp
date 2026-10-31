@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <malloc.h>
 #endif
 
 struct MappedFile {
@@ -273,6 +274,10 @@ struct Query {
 
 
 int main(int argc, char** argv) {
+#ifndef _WIN32
+    mallopt(M_ARENA_MAX, 1);
+    mallopt(M_TRIM_THRESHOLD, 64 * 1024);
+#endif
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
     init_tables();

@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <malloc.h>
 #endif
 
 struct MappedFile {
@@ -232,6 +233,10 @@ inline int64_t parse_field_cents(const char*& p, const char* limit) {
 }
 
 int main(int argc, char** argv) {
+#ifndef _WIN32
+    mallopt(M_ARENA_MAX, 1);
+    mallopt(M_TRIM_THRESHOLD, 64 * 1024);
+#endif
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
 
@@ -382,6 +387,7 @@ int main(int argc, char** argv) {
 
             const char* p = mf.data + start;
             const char* limit = mf.data + end;
+            const char* last_evict = p;
 
             if (t == 0) {
                 if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
@@ -419,13 +425,26 @@ int main(int argc, char** argv) {
                 cs.sum_name_len += name_len;
                 cs.sum_note_len += note_len;
                 cs.name_hashes.push_back(name_hash);
+
+#ifndef _WIN32
+                if (p - last_evict >= 262144) {
+                    uintptr_t page_start = (uintptr_t)last_evict & ~4095ULL;
+                    uintptr_t page_end = (uintptr_t)p & ~4095ULL;
+                    if (page_end > page_start) {
+                        madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+                    }
+                    last_evict = p;
+                }
+#endif
             }
 
 #ifndef _WIN32
-            if (end > start) {
-                uintptr_t page_start = (uintptr_t)(mf.data + start) & ~4095ULL;
-                uintptr_t page_end = ((uintptr_t)(mf.data + end) + 4095ULL) & ~4095ULL;
-                madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+            if (p > last_evict) {
+                uintptr_t page_start = (uintptr_t)last_evict & ~4095ULL;
+                uintptr_t page_end = ((uintptr_t)p + 4095ULL) & ~4095ULL;
+                if (page_end > page_start) {
+                    madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+                }
             }
 #endif
 

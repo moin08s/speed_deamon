@@ -16,4 +16,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 9 | Pure-AND shortest-postings-first intersection + term_seen epoch deduplication | run-7c52ef06f98e | 0.77 | 345 | 47.09 |
 | 10 | Two-pass direct postings scatter eliminating intermediate PostingEntry vectors entirely | run-e400b71a8ae6 | 0.98 | 152 | 47.63 |
 | 11 | Vectorized first-char skip in match_phrase_fast | run-50cd5caf4908 | 0.97 | 154 | 47.66 |
-| 12 | Bitset-accelerated character boundary scan + contiguous string buffers | pending-run | 0.20 | 145 | 70.00 |
+| 12 | Bitset-accelerated character boundary scan + contiguous string buffers | run-f51796761f47 | 0.96 | 153 | 47.78 |
+| 13 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + trim threshold | pending | pending | pending | pending |

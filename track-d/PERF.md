@@ -15,4 +15,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 8 | 8-thread worker topology balancing throughput and memory | run-f4a2e7f95a4a | 0.99 | 309 | 42.95 |
 | 9 | Radius-balanced min-distance popping in bidirectional Dijkstra | run-111177654666 | 2.53 | 328 | 32.69 |
 | 10 | 12-thread symmetric Dijkstra with size-balanced frontier expansion | run-f4a2e7f95a4a | 0.99 | 309 | 42.95 |
-| 11 | Two-pass direct CSR scatter eliminating intermediate edges vector + 4-worker thread allocation cutting RSS to ~64MB + early prune | pending | pending | pending | pending |
+| 11 | Two-pass direct CSR scatter eliminating intermediate edges vector + early prune cutoff | run-513ca75256b0 | 1.22 | 267 | 42.66 |
+| 12 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + 6 P-core workers | pending | pending | pending | pending |
