@@ -74,27 +74,6 @@ inline uint32_t parse_uint(const char*& p, const char* limit) {
     return val;
 }
 
-inline char* fast_i64(char* p, int64_t val) {
-    if (val < 0) {
-        *p++ = '-';
-        val = -val;
-    }
-    if (val == 0) {
-        *p++ = '0';
-        return p;
-    }
-    char buf[20];
-    int len = 0;
-    while (val > 0) {
-        buf[len++] = '0' + (val % 10);
-        val /= 10;
-    }
-    for (int i = len - 1; i >= 0; --i) {
-        *p++ = buf[i];
-    }
-    return p;
-}
-
 struct CSRGraph {
     uint32_t n = 0;
     uint32_t m = 0;
@@ -116,22 +95,24 @@ void load_graph(const char* path, CSRGraph& g) {
     g.n = parse_uint(p, limit);
     g.m = parse_uint(p, limit);
 
-    g.fwd_head.assign(g.n + 2, 0);
-    g.bwd_head.assign(g.n + 2, 0);
+    std::vector<uint32_t> u_arr(g.m);
+    std::vector<uint32_t> v_arr(g.m);
+    std::vector<uint32_t> w_arr(g.m);
 
-    const char* edges_start = p;
+    g.fwd_head.assign(g.n + 1, 0);
+    g.bwd_head.assign(g.n + 1, 0);
 
-    // Pass 1: count degrees (skip w to save CPU time)
     for (uint32_t i = 0; i < g.m; ++i) {
         uint32_t u = parse_uint(p, limit);
         uint32_t v = parse_uint(p, limit);
+        uint32_t w = parse_uint(p, limit);
+        u_arr[i] = u;
+        v_arr[i] = v;
+        w_arr[i] = w;
         if (u + 1 <= g.n) g.fwd_head[u + 1]++;
         if (v + 1 <= g.n) g.bwd_head[v + 1]++;
-        while (p < limit && *p != '\n') p++;
-        if (p < limit && *p == '\n') p++;
     }
 
-    // Prefix sums
     for (uint32_t i = 0; i < g.n; ++i) {
         g.fwd_head[i + 1] += g.fwd_head[i];
         g.bwd_head[i + 1] += g.bwd_head[i];
@@ -145,12 +126,10 @@ void load_graph(const char* path, CSRGraph& g) {
     g.bwd_w.resize(g.m);
     std::vector<uint32_t> bwd_cur = g.bwd_head;
 
-    // Pass 2: fill CSR directly from mapped memory without intermediate arrays
-    p = edges_start;
     for (uint32_t i = 0; i < g.m; ++i) {
-        uint32_t u = parse_uint(p, limit);
-        uint32_t v = parse_uint(p, limit);
-        uint32_t w = parse_uint(p, limit);
+        uint32_t u = u_arr[i];
+        uint32_t v = v_arr[i];
+        uint32_t w = w_arr[i];
 
         uint32_t pf = fwd_cur[u]++;
         g.fwd_dst[pf] = v;
@@ -298,7 +277,7 @@ int main(int argc, char** argv) {
 
     size_t total_q = queries.size();
     const size_t num_threads = 12;
-    std::vector<std::string> thread_outputs(num_threads);
+    std::vector<std::vector<int64_t>> thread_results(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
@@ -311,14 +290,9 @@ int main(int argc, char** argv) {
             if (start >= end) return;
             WorkerState ws;
             ws.init(g.n);
-            std::string& out_str = thread_outputs[t];
-            out_str.reserve((end - start) * 24);
-            char num_buf[32];
+            thread_results[t].resize(end - start);
             for (size_t i = start; i < end; ++i) {
-                int64_t ans = solve_bidir(g, ws, queries[i].first, queries[i].second);
-                char* p = fast_i64(num_buf, ans);
-                *p++ = '\n';
-                out_str.append(num_buf, p - num_buf);
+                thread_results[t][i - start] = solve_bidir(g, ws, queries[i].first, queries[i].second);
             }
         });
     }
@@ -334,9 +308,11 @@ int main(int argc, char** argv) {
     char out_buf[1048576];
     setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
 
+    char num_str[32];
     for (size_t t = 0; t < num_threads; ++t) {
-        if (!thread_outputs[t].empty()) {
-            fwrite(thread_outputs[t].data(), 1, thread_outputs[t].size(), fp);
+        for (int64_t ans : thread_results[t]) {
+            int len = snprintf(num_str, sizeof(num_str), "%lld\n", (long long)ans);
+            fwrite(num_str, 1, len, fp);
         }
     }
     fclose(fp);
