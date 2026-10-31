@@ -2,7 +2,6 @@
 #include <fstream>
 #include <vector>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <algorithm>
 #include <cstring>
@@ -66,9 +65,7 @@ struct MappedFile {
         size = 0;
     }
 
-    ~MappedFile() {
-        close();
-    }
+    ~MappedFile() { close(); }
 };
 
 struct FastStringMap {
@@ -242,10 +239,6 @@ inline char* fast_u64(char* p, uint64_t val) {
 }
 
 int main(int argc, char** argv) {
-#ifndef _WIN32
-    // mallopt removed
-    mallopt(M_TRIM_THRESHOLD, 64 * 1024);
-#endif
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
 
@@ -398,7 +391,14 @@ int main(int argc, char** argv) {
                     size_t idx99 = (99ULL * n + 99) / 100 - 1;
 
                     uint32_t p50, p95, p99;
-                    if (n <= 64) {
+                    if (n == 1) {
+                        p50 = p95 = p99 = lat[0];
+                    } else if (n == 2) {
+                        if (lat[0] > lat[1]) std::swap(lat[0], lat[1]);
+                        p50 = lat[idx50];
+                        p95 = lat[idx95];
+                        p99 = lat[idx99];
+                    } else if (n <= 64) {
                         std::sort(lat.begin(), lat.end());
                         p50 = lat[idx50];
                         p95 = lat[idx95];

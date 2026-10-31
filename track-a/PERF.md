@@ -17,3 +17,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 10 | Immediate MADV_DONTNEED page cache release on log chunks + in-flight hour record reclamation + n<=64 insertion sort threshold | run-90677effdd8c | 0.084 | 56 | 63.75 |
 | 11 | glibc arena restriction (mallopt M_ARENA_MAX=1) | run-f86c01fe985e | 0.106 | 51 | 61.60 |
 | 12 | Fast-path HTTP method jumping + instant vector clearance + active page reclamation | run-7be07d4030f9 | 0.088 | 54 | 63.57 |
+| 13 | n=1 and n=2 zero-sort percentile fast-path + trimmed headers | pending | pending | pending | pending |
