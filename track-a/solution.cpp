@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
+#include <cstdio>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>

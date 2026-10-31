@@ -2,10 +2,15 @@
 #include <fstream>
 #include <vector>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <map>
 #include <thread>
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
+#include <cstdio>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
