@@ -15,4 +15,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 8 | Flat CSR inverted index with lock-free direct scatter + rarest-first phrase candidate pruning | run-4ace10d60fde | 0.87 | 315 | 46.10 |
 | 9 | Pure-AND shortest-postings-first intersection + term_seen epoch deduplication | run-7c52ef06f98e | 0.77 | 345 | 47.09 |
 | 10 | Two-pass direct postings scatter eliminating intermediate PostingEntry vectors entirely | run-e400b71a8ae6 | 0.98 | 152 | 47.63 |
-| 11 | Vectorized first-char skip in match_phrase_fast | pending-run | 0.25 | 150 | 68.00 |
+| 11 | Vectorized first-char skip in match_phrase_fast | run-50cd5caf4908 | 0.97 | 154 | 47.66 |
+| 12 | Bitset-accelerated character boundary scan + contiguous string buffers | pending-run | 0.20 | 145 | 70.00 |

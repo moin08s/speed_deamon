@@ -12,5 +12,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 5 | Compact 8-byte LogEntry flat contiguous stream + parallel in-place sort | run-84705e374190 | 0.20 | 108 | 50.83 |
 | 6 | Fully parallel hour-partitioned reduction with zero-lock concurrent percentile computation and direct chunked serialization | run-b99ec8b90d2b | 0.09 | 81 | 60.25 |
 | 7 | O(N) counting sort on hour IDs eliminating std::sort + latency buffer capacity reuse | run-d8fe10ccd04a | 0.09 | 92 | 60.01 |
-| 8 | Per-hour bucketed parsing to eliminate sorted_records vector + direct global-to-local indexing | run-7ccb5b06f478 | 0.09 | 72 | 60.94 |
+| 8 | Per-hour bucketed parsing to eliminate sorted_records vector + direct global-to-local indexing | run-d4f5949e00fa | 0.089 | 73 | 61.23 |
 | 9 | In-flight hour record reclamation during reduction | pending-run | 0.04 | 28 | 85.00 |

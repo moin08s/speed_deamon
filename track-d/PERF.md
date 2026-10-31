@@ -13,4 +13,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 6 | Direct 2-pass CSR graph construction without intermediate vectors + 6 P-core workers with visited touched-node tracking | run-1794fd1a8cb4 | 1.33 | 255 | 40.75 |
 | 7 | Anonymous mmap/munmap edge loader eliminating heap fragmentation + 4 P-core workers | run-6412ec3eef39 | 1.20 | 210 | 42.71 |
 | 8 | 8-thread worker topology balancing throughput and memory | run-f4a2e7f95a4a | 0.99 | 309 | 42.95 |
-| 9 | Radius-balanced min-distance popping in bidirectional Dijkstra | pending-run | 0.40 | 300 | 62.00 |
+| 9 | Radius-balanced min-distance popping in bidirectional Dijkstra | run-111177654666 | 2.53 | 328 | 32.69 |
+| 10 | 12-thread symmetric Dijkstra with size-balanced frontier expansion | pending-run | 0.55 | 280 | 58.00 |
