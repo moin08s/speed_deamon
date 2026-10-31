@@ -30,4 +30,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 23 | Symmetric adaptive galloping search (intersect_slices) + 2-term direct intersection without initial copy + immediate docs.txt madvise DONTNEED page cache eviction | run-5063e7bed17f | 0.701 | 144 | 51.12 |
 | 24 | AVX2 SIMD simultaneous char-pair phrase candidate search + zero-allocation TermView queries + 1-term BOOL fast path + doc-list Pass 2 scatter | run-7c85aec550b9 | 0.609 | 149 | 52.59 |
 | 25 | 2-term Boolean direct zero-copy evaluation + difference_slices/union_slices zero-reallocation operations + unified format_postings_direct | run-0d49c97cda04 | 0.638 | 153 | 51.81 |
-| 26 | Keep docs.txt hot in page cache during phrase queries (MADV_WILLNEED) + defer mf.close() | pending | | | |
+| 26 | Keep docs.txt hot in page cache during phrase queries (MADV_WILLNEED) + defer mf.close() | run-3bee2cc494c2 | 0.637 | 154 | 51.80 |
