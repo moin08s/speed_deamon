@@ -121,7 +121,7 @@ inline char* fast_u64(char* p, uint64_t val) {
 
 // Zero-allocation flat term table: stores string pointer directly into mmap!
 struct FastTermTable {
-    static constexpr uint32_t CAPACITY = 524288;
+    static constexpr uint32_t CAPACITY = 65536;
     static constexpr uint32_t MASK = CAPACITY - 1;
 
     struct Entry {
@@ -199,11 +199,21 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
 
     size_t pos = 0;
     while (pos + len_first <= L) {
-        size_t idx = pos;
-        while (idx + len_first <= L && text[idx] != c0_low && text[idx] != c0_up) {
-            idx++;
+        size_t rem = L - pos;
+        if (rem < len_first) return false;
+        size_t scan_len = rem - len_first + 1;
+        const char* p_match = nullptr;
+        if (c0_low == c0_up) {
+            p_match = (const char*)std::memchr(text + pos, c0_low, scan_len);
+        } else {
+            const char* p1 = (const char*)std::memchr(text + pos, c0_low, scan_len);
+            const char* p2 = (const char*)std::memchr(text + pos, c0_up, scan_len);
+            if (!p1) p_match = p2;
+            else if (!p2) p_match = p1;
+            else p_match = std::min(p1, p2);
         }
-        if (idx + len_first > L) return false;
+        if (!p_match) return false;
+        size_t idx = p_match - text;
 
         bool eq = true;
         for (size_t k = 1; k < len_first; ++k) {
@@ -610,6 +620,7 @@ int main(int argc, char** argv) {
                                     auto [ptr_k, len_k] = get_postings(sorted_terms[k]);
                                     if (len_k == 0) { cur_res.clear(); break; }
                                     temp.clear();
+                                    temp.reserve(cur_res.size());
                                     std::set_intersection(cur_res.begin(), cur_res.end(),
                                                           ptr_k, ptr_k + len_k,
                                                           std::back_inserter(temp));
@@ -631,6 +642,7 @@ int main(int argc, char** argv) {
                                         cur_res.clear();
                                     } else {
                                         temp.clear();
+                                        temp.reserve(cur_res.size());
                                         std::set_intersection(cur_res.begin(), cur_res.end(),
                                                               ptr_rhs, ptr_rhs + len_rhs,
                                                               std::back_inserter(temp));
@@ -687,6 +699,7 @@ int main(int argc, char** argv) {
                                     break;
                                 }
                                 temp.clear();
+                                temp.reserve(cur_res.size());
                                 std::set_intersection(cur_res.begin(), cur_res.end(),
                                                       ptr_k, ptr_k + len_k,
                                                       std::back_inserter(temp));

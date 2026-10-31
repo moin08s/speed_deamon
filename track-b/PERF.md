@@ -23,3 +23,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 16 | 12-thread parallel query batching + zero-allocation direct postings slice evaluation | run-b373c26c7dc9 | 0.974 | 129 | 48.35 |
 | 17 | Single-pass intermediate entries test (increased memory due to double-buffering) | run-e1bea5b305f6 | 1.084 | 306 | 43.53 |
 | 18 | Restored 2-pass direct postings scatter with zero intermediate PostingEntry overhead | run-b373c26c7dc9 | 0.974 | 129 | 48.35 |
+| 19 | 2-pass direct CSR scatter + arena tuning | run-aab25c804156 | 0.927 | 130 | 48.86 |
+| 20 | L3 cache-resident 64K FastTermTable + SIMD memchr phrase candidate scanner + pre-reserved intersection buffers | pending | pending | pending | pending |
