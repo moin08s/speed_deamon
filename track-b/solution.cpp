@@ -268,10 +268,7 @@ struct Query {
     std::vector<std::string> phrase_terms;
 };
 
-struct PostingEntry {
-    uint32_t term_id;
-    uint32_t doc_id;
-};
+
 
 int main(int argc, char** argv) {
     std::ios_base::sync_with_stdio(false);
@@ -374,7 +371,6 @@ int main(int argc, char** argv) {
     };
 
     struct ThreadIndex {
-        std::vector<PostingEntry> entries;
         std::vector<DocInfo> docs;
         std::vector<uint32_t> term_counts;
     };
@@ -383,18 +379,16 @@ int main(int argc, char** argv) {
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
+    // Pass 1: Count term frequencies and collect doc info without storing postings
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
             const char* p = mf.data + split_points[t];
             const char* limit = mf.data + split_points[t + 1];
             auto& t_idx = thread_indices[t];
-            t_idx.entries.reserve((limit - p) / 25);
             t_idx.term_counts.assign(num_terms, 0);
 
             std::vector<uint32_t> term_seen(num_terms, 0);
             uint32_t cur_epoch = 1;
-            std::vector<int> doc_terms;
-            doc_terms.reserve(256);
 
             while (p < limit) {
                 const char* nl = (const char*)memchr(p, '\n', limit - p);
@@ -416,7 +410,6 @@ int main(int argc, char** argv) {
 
                     t_idx.docs.push_back({doc_id, offset, text_len});
 
-                    doc_terms.clear();
                     if (cur_epoch == 0xFFFFFFF0) {
                         std::fill(term_seen.begin(), term_seen.end(), 0);
                         cur_epoch = 1;
@@ -436,16 +429,11 @@ int main(int argc, char** argv) {
                         if (term_id != -1) {
                             if (term_seen[term_id] != cur_epoch) {
                                 term_seen[term_id] = cur_epoch;
-                                doc_terms.push_back(term_id);
+                                t_idx.term_counts[term_id]++;
                             }
                         }
                     }
                     cur_epoch++;
-
-                    for (int term_id : doc_terms) {
-                        t_idx.entries.push_back({(uint32_t)term_id, doc_id});
-                        t_idx.term_counts[term_id]++;
-                    }
                 }
                 p = nl ? nl + 1 : limit;
             }
@@ -467,17 +455,68 @@ int main(int argc, char** argv) {
         term_offsets[term_id + 1] = cur;
     }
 
+    // Free thread term_counts now
+    for (size_t t = 0; t < num_threads; ++t) {
+        thread_indices[t].term_counts.clear();
+        thread_indices[t].term_counts.shrink_to_fit();
+    }
+
     uint32_t total_postings = term_offsets[num_terms];
     std::vector<uint32_t> postings_data(total_postings);
 
-    // Parallel lock-free direct scatter into postings_data
+    // Pass 2: Directly scatter into postings_data from memory-mapped file
     threads.clear();
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
+            const char* p = mf.data + split_points[t];
+            const char* limit = mf.data + split_points[t + 1];
             auto& starts = thread_start[t];
-            for (const auto& entry : thread_indices[t].entries) {
-                uint32_t slot = starts[entry.term_id]++;
-                postings_data[slot] = entry.doc_id;
+
+            std::vector<uint32_t> term_seen(num_terms, 0);
+            uint32_t cur_epoch = 1;
+
+            while (p < limit) {
+                const char* nl = (const char*)memchr(p, '\n', limit - p);
+                const char* line_end = nl ? nl : limit;
+                if (line_end > p && *(line_end - 1) == '\r') line_end--;
+
+                const char* tab = (const char*)memchr(p, '\t', line_end - p);
+                if (tab) {
+                    uint32_t doc_id = 0;
+                    const char* cur = p;
+                    while (cur < tab && *cur >= '0' && *cur <= '9') {
+                        doc_id = doc_id * 10 + (*cur - '0');
+                        cur++;
+                    }
+
+                    const char* text_start = tab + 1;
+                    if (cur_epoch == 0xFFFFFFF0) {
+                        std::fill(term_seen.begin(), term_seen.end(), 0);
+                        cur_epoch = 1;
+                    }
+                    const char* tp = text_start;
+                    while (tp < line_end) {
+                        while (tp < line_end && !IS_ALNUM[(uint8_t)to_lower_char(*tp)]) tp++;
+                        if (tp >= line_end) break;
+                        const char* w_start = tp;
+                        uint64_t h = 0xcbf29ce484222325ULL;
+                        while (tp < line_end && IS_ALNUM[(uint8_t)to_lower_char(*tp)]) {
+                            h = (h ^ (unsigned char)to_lower_char(*tp)) * 0x100000001b3ULL;
+                            tp++;
+                        }
+                        size_t w_len = tp - w_start;
+                        int term_id = term_table.find(w_start, w_len, h);
+                        if (term_id != -1) {
+                            if (term_seen[term_id] != cur_epoch) {
+                                term_seen[term_id] = cur_epoch;
+                                uint32_t slot = starts[term_id]++;
+                                postings_data[slot] = doc_id;
+                            }
+                        }
+                    }
+                    cur_epoch++;
+                }
+                p = nl ? nl + 1 : limit;
             }
         });
     }

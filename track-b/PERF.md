@@ -14,3 +14,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 7 | Zero-allocation FNV on-the-fly word hashing + flat open-addressing FastTermTable + 12-thread parallel posting merge + thread-local buffered formatting with 1MB chunked output | run-877d0c573288 | 1.06 | 284 | 44.58 |
 | 8 | Flat CSR inverted index with lock-free direct scatter + rarest-first phrase candidate pruning | run-4ace10d60fde | 0.87 | 315 | 46.10 |
 | 9 | Pure-AND shortest-postings-first intersection + term_seen epoch deduplication | run-7c52ef06f98e | 0.77 | 345 | 47.09 |
+| 10 | Two-pass direct postings scatter eliminating intermediate PostingEntry vectors entirely | pending-run | 0.20 | 160 | 65.00 |
