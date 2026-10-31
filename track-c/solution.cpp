@@ -19,6 +19,10 @@
 #include <malloc.h>
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
+
 struct MappedFile {
     const char* data = nullptr;
     size_t size = 0;
@@ -68,6 +72,30 @@ struct MappedFile {
     ~MappedFile() { close(); }
 };
 
+inline uint64_t fast_crc64(const char* s, size_t len) {
+    uint64_t h = 0xcbf29ce484222325ULL;
+#if defined(__x86_64__) || defined(_M_X64)
+    size_t rem = len;
+    const char* ptr = s;
+    while (rem >= 8) {
+        uint64_t v;
+        std::memcpy(&v, ptr, 8);
+        h = _mm_crc32_u64(h, v);
+        ptr += 8;
+        rem -= 8;
+    }
+    while (rem > 0) {
+        h = _mm_crc32_u8((uint32_t)h, (uint8_t)*ptr++);
+        rem--;
+    }
+#else
+    for (size_t i = 0; i < len; ++i) {
+        h = (h ^ (unsigned char)s[i]) * 0x100000001b3ULL;
+    }
+#endif
+    return h ? h : 1;
+}
+
 struct CountryStats {
     int64_t count = 0;
     int64_t sum_rec_id = 0;
@@ -78,6 +106,42 @@ struct CountryStats {
     int64_t sum_name_len = 0;
     int64_t sum_note_len = 0;
     std::vector<uint64_t> name_hashes;
+};
+
+struct ThreadSeenFilter {
+    static constexpr size_t CAP = 131072;
+    static constexpr size_t MASK = CAP - 1;
+
+    struct Entry {
+        uint64_t hash;
+        uint16_t cid;
+        uint16_t valid;
+    };
+
+    Entry* table = nullptr;
+
+    ThreadSeenFilter() {
+        table = (Entry*)std::calloc(CAP, sizeof(Entry));
+    }
+
+    ~ThreadSeenFilter() {
+        if (table) std::free(table);
+    }
+
+    inline bool insert(uint16_t cid, uint64_t name_hash) {
+        uint64_t key = name_hash ^ ((uint64_t)cid * 0x517cc1b727220a95ULL);
+        size_t idx = (size_t)key & MASK;
+        while (table[idx].valid) {
+            if (table[idx].cid == cid && table[idx].hash == name_hash) {
+                return false;
+            }
+            idx = (idx + 1) & MASK;
+        }
+        table[idx].hash = name_hash;
+        table[idx].cid = cid;
+        table[idx].valid = 1;
+        return true;
+    }
 };
 
 inline char* fast_i64(char* p, int64_t val) {
@@ -116,8 +180,8 @@ inline char* fast_format_cents(char* p, int64_t cents) {
 }
 
 inline int64_t parse_field_int(const char*& p, const char* limit) {
-    if (p >= limit) return 0;
-    if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
+    if (__builtin_expect(p >= limit, 0)) return 0;
+    if (__builtin_expect(limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf, 0)) {
         p += 3;
     }
     int64_t val = 0;
@@ -129,52 +193,75 @@ inline int64_t parse_field_int(const char*& p, const char* limit) {
 }
 
 inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& out_hash, size_t& utf8_len) {
-    out_hash = 0xcbf29ce484222325ULL;
-    utf8_len = 0;
-    if (p >= limit) return;
-    if (*p == '"') {
-        p++;
+    if (__builtin_expect(p >= limit, 0)) {
+        out_hash = 1;
+        utf8_len = 0;
+        return;
+    }
+    if (__builtin_expect(*p == '"', 1)) {
+        p++; // skip opening quote
+        const char* q = (const char*)std::memchr(p, '"', limit - p);
+        if (__builtin_expect(q && q + 1 < limit && *(q + 1) == ',', 1)) {
+            utf8_len = q - p;
+            out_hash = fast_crc64(p, utf8_len);
+            p = q + 2; // skip quote and comma
+            return;
+        }
+
+        // Handles "" escape sequences or trailing fields
+        char unesc[1024];
+        size_t ulen = 0;
         while (p < limit) {
-            const char* q = (const char*)std::memchr(p, '"', limit - p);
             if (!q) {
-                utf8_len += (limit - p);
-                for (const char* k = p; k < limit; ++k) {
-                    out_hash = (out_hash ^ (unsigned char)*k) * 0x100000001b3ULL;
+                size_t chunk = limit - p;
+                if (ulen + chunk < sizeof(unesc)) {
+                    std::memcpy(unesc + ulen, p, chunk);
+                    ulen += chunk;
                 }
                 p = limit;
                 break;
             }
-            utf8_len += (q - p);
-            for (const char* k = p; k < q; ++k) {
-                out_hash = (out_hash ^ (unsigned char)*k) * 0x100000001b3ULL;
+            size_t chunk = q - p;
+            if (ulen + chunk < sizeof(unesc)) {
+                std::memcpy(unesc + ulen, p, chunk);
+                ulen += chunk;
             }
             if (q + 1 < limit && *(q + 1) == '"') {
-                utf8_len++;
-                out_hash = (out_hash ^ '"') * 0x100000001b3ULL;
+                if (ulen + 1 < sizeof(unesc)) {
+                    unesc[ulen++] = '"';
+                }
                 p = q + 2;
+                q = (const char*)std::memchr(p, '"', limit - p);
             } else {
                 p = q + 1;
                 break;
             }
         }
         if (p < limit && *p == ',') p++;
+        utf8_len = ulen;
+        out_hash = fast_crc64(unesc, ulen);
     } else {
         const char* s = p;
-        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
-            out_hash = (out_hash ^ (unsigned char)*p++) * 0x100000001b3ULL;
-        }
+        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') p++;
         utf8_len = p - s;
+        out_hash = fast_crc64(s, utf8_len);
         if (p < limit && *p == ',') p++;
     }
 }
 
 inline size_t parse_field_len_only(const char*& p, const char* limit) {
-    if (p >= limit) return 0;
-    size_t utf8_len = 0;
-    if (*p == '"') {
+    if (__builtin_expect(p >= limit, 0)) return 0;
+    if (__builtin_expect(*p == '"', 1)) {
         p++;
+        const char* q = (const char*)std::memchr(p, '"', limit - p);
+        if (__builtin_expect(q && q + 1 < limit && *(q + 1) == ',', 1)) {
+            size_t len = q - p;
+            p = q + 2;
+            return len;
+        }
+
+        size_t utf8_len = 0;
         while (p < limit) {
-            const char* q = (const char*)std::memchr(p, '"', limit - p);
             if (!q) {
                 utf8_len += (limit - p);
                 p = limit;
@@ -184,19 +271,21 @@ inline size_t parse_field_len_only(const char*& p, const char* limit) {
             if (q + 1 < limit && *(q + 1) == '"') {
                 utf8_len++;
                 p = q + 2;
+                q = (const char*)std::memchr(p, '"', limit - p);
             } else {
                 p = q + 1;
                 break;
             }
         }
         if (p < limit && *p == ',') p++;
+        return utf8_len;
     } else {
         const char* s = p;
         while (p < limit && *p != ',' && *p != '\n' && *p != '\r') p++;
-        utf8_len = p - s;
+        size_t utf8_len = p - s;
         if (p < limit && *p == ',') p++;
+        return utf8_len;
     }
-    return utf8_len;
 }
 
 inline int32_t parse_field_int32(const char*& p, const char* limit) {
@@ -209,7 +298,7 @@ inline int32_t parse_field_int32(const char*& p, const char* limit) {
 }
 
 inline int64_t parse_field_cents(const char*& p, const char* limit) {
-    if (p >= limit) return 0;
+    if (__builtin_expect(p >= limit, 0)) return 0;
     bool neg = (*p == '-');
     if (neg) p++;
     int64_t val = 0;
@@ -287,8 +376,7 @@ int main(int argc, char** argv) {
     std::memset(table, 0, sizeof(table));
 
     auto get_country_id = [&](const char* s, size_t len) -> uint16_t {
-        uint64_t h = 0xcbf29ce484222325ULL;
-        for (size_t i = 0; i < len; ++i) h = (h ^ (unsigned char)s[i]) * 0x100000001b3ULL;
+        uint64_t h = fast_crc64(s, len);
         size_t idx = h & MASK;
         while (table[idx].hash != 0) {
             if (table[idx].hash == h && table[idx].len == len && std::memcmp(table[idx].name, s, len) == 0) {
@@ -296,7 +384,7 @@ int main(int argc, char** argv) {
             }
             idx = (idx + 1) & MASK;
         }
-        table[idx].hash = h ? h : 1;
+        table[idx].hash = h;
         table[idx].len = (uint16_t)len;
         uint16_t id = (uint16_t)raw_country_names.size();
         table[idx].id = id;
@@ -416,8 +504,10 @@ int main(int argc, char** argv) {
 
             auto& stats = thread_stats[t];
             for (auto& cs : stats) {
-                cs.name_hashes.reserve(128);
+                cs.name_hashes.reserve(256);
             }
+
+            ThreadSeenFilter filter;
 
             const char* p = mf.data + start;
             const char* limit = mf.data + end;
@@ -457,13 +547,15 @@ int main(int argc, char** argv) {
                 }
                 cs.sum_name_len += name_len;
                 cs.sum_note_len += note_len;
-                cs.name_hashes.push_back(name_hash);
+
+                if (filter.insert(cid, name_hash)) {
+                    cs.name_hashes.push_back(name_hash);
+                }
             }
 
             for (auto& cs : stats) {
-                if (!cs.name_hashes.empty()) {
+                if (cs.name_hashes.size() > 1) {
                     std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
-                    cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
                 }
             }
         });

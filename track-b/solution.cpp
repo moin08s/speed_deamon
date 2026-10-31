@@ -691,7 +691,7 @@ int main(int argc, char** argv) {
     thread_start.shrink_to_fit();
 
 #ifndef _WIN32
-    madvise((void*)mf.data, mf.size, MADV_DONTNEED);
+    madvise((void*)mf.data, mf.size, MADV_WILLNEED);
 #endif
 
     auto get_postings = [&](int term_id) -> std::pair<const uint32_t*, size_t> {
@@ -907,6 +907,7 @@ int main(int argc, char** argv) {
     }
 
     for (auto& th : threads) th.join();
+    mf.close();
 
     std::string out_path = out_dir + "/results.txt";
     FILE* fp = fopen(out_path.c_str(), "wb");

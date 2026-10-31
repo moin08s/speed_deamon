@@ -29,3 +29,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 22 | Direct pointer-subtraction string length + unquoted fast-path integer/cents parsing | run-9fa3fe19bcdf | 0.102 | 46 | 57.02 |
 | 23 | Direct SIMD comma pointer subtraction on unquoted note/name (BOM check regression on hostile CSV) | run-38185f14e0bc | 0.103 | 49 | failure (hash mismatch) |
 | 24 | Restored UTF-8 BOM check in parse_field_int + restored standard unquoted delimiters | run-1b5c2c22c2d0 | 0.103 | 49 | 56.78 |
+| 25 | Open-addressing on-the-fly deduplication filter (ThreadSeenFilter) + fast-path unescaped quote scanning + AVX2/SSE CRC32 name hashing | pending | | | |
