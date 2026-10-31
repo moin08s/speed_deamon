@@ -12,12 +12,14 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <intrin.h>
 #else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <malloc.h>
+#include <x86intrin.h>
 #endif
 
 struct MappedFile {
@@ -88,9 +90,23 @@ struct FastStringMap {
     }
 
     static inline uint64_t hash_bytes(const char* p, size_t len) {
-        uint64_t h = 0xcbf29ce484222325ULL;
-        for (size_t i = 0; i < len; ++i) {
-            h = (h ^ (unsigned char)p[i]) * 0x100000001b3ULL;
+        uint64_t h = len;
+        size_t i = 0;
+        while (i + 8 <= len) {
+            uint64_t v;
+            std::memcpy(&v, p + i, 8);
+            h = _mm_crc32_u64(h, v);
+            i += 8;
+        }
+        if (i + 4 <= len) {
+            uint32_t v;
+            std::memcpy(&v, p + i, 4);
+            h = _mm_crc32_u32((uint32_t)h, v);
+            i += 4;
+        }
+        while (i < len) {
+            h = _mm_crc32_u8((uint32_t)h, (unsigned char)p[i]);
+            i++;
         }
         return h ? h : 1;
     }
@@ -132,15 +148,25 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
     const char* limit = buf + end;
 
     int last_hid = -1;
-    const char* last_hour_ptr = nullptr;
+    uint64_t last_h0 = 0;
+    uint32_t last_h1 = 0;
+    uint8_t last_h2 = 0;
+    bool has_last_hour = false;
 
     while (p < limit) {
         if (*p == '\r' || *p == '\n') { p++; continue; }
         if (limit - p < 35) break;
 
-        // Hour: p[0..12]
+        // Fast 2-cycle integer hour match
+        uint64_t cur_h0;
+        uint32_t cur_h1;
+        uint8_t cur_h2;
+        std::memcpy(&cur_h0, p, 8);
+        std::memcpy(&cur_h1, p + 8, 4);
+        cur_h2 = (uint8_t)p[12];
+
         int hid = last_hid;
-        if (last_hour_ptr == nullptr || std::memcmp(last_hour_ptr, p, 13) != 0) {
+        if (!has_last_hour || cur_h0 != last_h0 || cur_h1 != last_h1 || cur_h2 != last_h2) {
             hid = td.hour_map.get_or_insert(p, 13);
             if (hid >= (int)td.hours.size()) {
                 td.hours.emplace_back(p, 13);
@@ -150,7 +176,10 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
                 td.hour_records[hid].reserve(4096);
             }
             last_hid = hid;
-            last_hour_ptr = p;
+            last_h0 = cur_h0;
+            last_h1 = cur_h1;
+            last_h2 = cur_h2;
+            has_last_hour = true;
         }
 
         // Fast O(1) HTTP method jump
@@ -200,8 +229,10 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
 
         td.hour_records[hid].push_back({lat, (uint16_t)((uint16_t)eid | is_err_flag), 0});
 
-        const char* nl = (const char*)std::memchr(lat_ptr, '\n', limit - lat_ptr);
-        p = nl ? nl + 1 : limit;
+        // Fast newline advance without memchr
+        if (lat_ptr < limit && *lat_ptr == '\r') lat_ptr++;
+        if (lat_ptr < limit && *lat_ptr == '\n') lat_ptr++;
+        p = lat_ptr;
     }
 
 #ifndef _WIN32
