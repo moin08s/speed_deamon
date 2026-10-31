@@ -2,9 +2,6 @@
 #include <fstream>
 #include <vector>
 #include <string>
-#include <string_view>
-#include <unordered_map>
-#include <map>
 #include <thread>
 #include <algorithm>
 #include <cstring>
@@ -74,7 +71,7 @@ struct CountryStats {
     bool has_cents = false;
     int64_t sum_name_len = 0;
     int64_t sum_note_len = 0;
-    std::vector<std::string> names;
+    std::vector<uint64_t> name_hashes;
 };
 
 inline int64_t parse_field_int(const char*& p, const char* limit) {
@@ -94,8 +91,8 @@ inline int64_t parse_field_int(const char*& p, const char* limit) {
     return val;
 }
 
-inline void parse_field_string(const char*& p, const char* limit, std::string& out, size_t& utf8_len) {
-    out.clear();
+inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& out_hash, size_t& utf8_len) {
+    out_hash = 0xcbf29ce484222325ULL;
     utf8_len = 0;
     if (p >= limit) return;
     if (*p == '"') {
@@ -103,7 +100,7 @@ inline void parse_field_string(const char*& p, const char* limit, std::string& o
         while (p < limit) {
             if (*p == '"') {
                 if (p + 1 < limit && *(p + 1) == '"') {
-                    out.push_back('"');
+                    out_hash = (out_hash ^ '"') * 0x100000001b3ULL;
                     utf8_len++;
                     p += 2;
                 } else {
@@ -113,7 +110,7 @@ inline void parse_field_string(const char*& p, const char* limit, std::string& o
             } else {
                 unsigned char c = (unsigned char)*p;
                 if ((c & 0xC0) != 0x80) utf8_len++;
-                out.push_back(*p);
+                out_hash = (out_hash ^ c) * 0x100000001b3ULL;
                 p++;
             }
         }
@@ -122,7 +119,7 @@ inline void parse_field_string(const char*& p, const char* limit, std::string& o
         while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
             unsigned char c = (unsigned char)*p;
             if ((c & 0xC0) != 0x80) utf8_len++;
-            out.push_back(*p);
+            out_hash = (out_hash ^ c) * 0x100000001b3ULL;
             p++;
         }
         if (p < limit && *p == ',') p++;
@@ -212,9 +209,6 @@ void parse_chunk(const char* buf, size_t start, size_t end, bool is_first,
         if (p < limit && *p == '\n') p++;
     }
 
-    std::string name_str;
-    name_str.reserve(128);
-
     while (p < limit) {
         if (*p == '\r' || *p == '\n') {
             p++;
@@ -222,8 +216,9 @@ void parse_chunk(const char* buf, size_t start, size_t end, bool is_first,
         }
 
         int64_t rec_id = parse_field_int(p, limit);
+        uint64_t name_hash = 0;
         size_t name_len = 0;
-        parse_field_string(p, limit, name_str, name_len);
+        parse_field_name_hash(p, limit, name_hash, name_len);
         size_t note_len = parse_field_len_only(p, limit);
         int32_t reg_id = parse_field_int32(p, limit);
         int64_t cents = parse_field_cents(p, limit);
@@ -245,13 +240,13 @@ void parse_chunk(const char* buf, size_t start, size_t end, bool is_first,
         }
         cs.sum_name_len += name_len;
         cs.sum_note_len += note_len;
-        cs.names.push_back(name_str);
+        cs.name_hashes.push_back(name_hash);
     }
 
     for (auto& cs : stats) {
-        if (!cs.names.empty()) {
-            std::sort(cs.names.begin(), cs.names.end());
-            cs.names.erase(std::unique(cs.names.begin(), cs.names.end()), cs.names.end());
+        if (!cs.name_hashes.empty()) {
+            std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
+            cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
         }
     }
 }
@@ -369,7 +364,13 @@ int main(int argc, char** argv) {
         t.join();
     }
 
-    std::map<std::string, CountryStats> final_map;
+    struct FinalCountryEntry {
+        std::string country;
+        CountryStats cs;
+    };
+    std::vector<FinalCountryEntry> final_entries;
+    final_entries.reserve(countries.size());
+
     for (size_t i = 0; i < countries.size(); ++i) {
         CountryStats combined;
         for (size_t t = 0; t < num_threads; ++t) {
@@ -388,14 +389,18 @@ int main(int argc, char** argv) {
             }
             combined.sum_name_len += ts.sum_name_len;
             combined.sum_note_len += ts.sum_note_len;
-            combined.names.insert(combined.names.end(), ts.names.begin(), ts.names.end());
+            combined.name_hashes.insert(combined.name_hashes.end(), ts.name_hashes.begin(), ts.name_hashes.end());
         }
         if (combined.count > 0) {
-            std::sort(combined.names.begin(), combined.names.end());
-            combined.names.erase(std::unique(combined.names.begin(), combined.names.end()), combined.names.end());
-            final_map[countries[i]] = std::move(combined);
+            std::sort(combined.name_hashes.begin(), combined.name_hashes.end());
+            combined.name_hashes.erase(std::unique(combined.name_hashes.begin(), combined.name_hashes.end()), combined.name_hashes.end());
+            final_entries.push_back({countries[i], std::move(combined)});
         }
     }
+
+    std::sort(final_entries.begin(), final_entries.end(), [](const FinalCountryEntry& a, const FinalCountryEntry& b) {
+        return a.country < b.country;
+    });
 
     std::string out_path = out_dir + "/aggregates.txt";
     FILE* fp = fopen(out_path.c_str(), "wb");
@@ -405,15 +410,16 @@ int main(int argc, char** argv) {
     setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
 
     char line_buf[2048];
-    for (auto& [country, cs] : final_map) {
+    for (auto& entry : final_entries) {
+        const auto& cs = entry.cs;
         std::string s_cents = format_cents(cs.sum_cents);
         std::string s_min = format_cents(cs.min_cents);
         std::string s_max = format_cents(cs.max_cents);
 
         int len = snprintf(line_buf, sizeof(line_buf), "%s %lld %lld %s %s %s %zu %lld %lld\n",
-                           country.c_str(), (long long)cs.count, (long long)cs.sum_rec_id,
+                           entry.country.c_str(), (long long)cs.count, (long long)cs.sum_rec_id,
                            s_cents.c_str(), s_min.c_str(), s_max.c_str(),
-                           cs.names.size(), (long long)cs.sum_name_len, (long long)cs.sum_note_len);
+                           cs.name_hashes.size(), (long long)cs.sum_name_len, (long long)cs.sum_note_len);
         fwrite(line_buf, 1, len, fp);
     }
     fclose(fp);
