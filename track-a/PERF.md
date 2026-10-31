@@ -18,4 +18,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 11 | glibc arena restriction (mallopt M_ARENA_MAX=1) | run-f86c01fe985e | 0.106 | 51 | 61.60 |
 | 12 | Fast-path HTTP method jumping + instant vector clearance + active page reclamation | run-7be07d4030f9 | 0.088 | 54 | 63.57 |
 | 13 | n=1 and n=2 zero-sort percentile fast-path | run-b99e0bd799cf | 0.083 | 60 | 63.63 |
-| 14 | Zero-allocation flat endpoint arena in Phase 2 reduction (eliminating 66K heap vector allocations) | pending | pending | pending | pending |
+| 14 | Zero-allocation flat endpoint arena in Phase 2 reduction | run-9d5408ad00d3 | 0.111 | 71 | 59.43 |
+| 15 | Small-vector inline latency buffer (N<=4 zero-alloc) + O(1) method jump + register sorting | pending | pending | pending | pending |

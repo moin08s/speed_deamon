@@ -18,3 +18,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 11 | Two-pass direct CSR scatter eliminating intermediate edges vector + early prune cutoff | run-513ca75256b0 | 1.22 | 267 | 42.66 |
 | 12 | glibc single-arena restriction (mallopt M_ARENA_MAX=1) + 6 P-core workers | run-f767c903847c | 1.25 | 254 | 42.37 |
 | 13 | mallopt M_ARENA_MAX=2 to eliminate arena contention + 8-worker thread topology | run-47b1dbc5fca1 | 1.06 | 308 | 43.35 |
+| 14 | 6-worker P-core topology evaluation | run-cef8232fac01 | 1.415 | 254 | 41.05 |
+| 15 | Restored 12-thread parallel query batching + mallopt M_ARENA_MAX=2 | pending | pending | pending | pending |

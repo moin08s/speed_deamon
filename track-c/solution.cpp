@@ -77,16 +77,17 @@ struct CountryStats {
     bool has_cents = false;
     int64_t sum_name_len = 0;
     int64_t sum_note_len = 0;
+    std::vector<uint64_t> name_hashes;
 };
 
 inline char* fast_i64(char* p, int64_t val) {
-    if (val == 0) {
-        *p++ = '0';
-        return p;
-    }
     if (val < 0) {
         *p++ = '-';
         val = -val;
+    }
+    if (val == 0) {
+        *p++ = '0';
+        return p;
     }
     char buf[24];
     int len = 0;
@@ -217,37 +218,24 @@ inline int64_t parse_field_cents(const char*& p, const char* limit) {
         neg = true;
         p++;
     }
-    int64_t whole = 0;
-    while (p < limit && *p >= '0' && *p <= '9') {
-        whole = whole * 10 + (*p - '0');
-        p++;
-    }
-    int64_t frac = 0;
-    if (p < limit && *p == '.') {
-        p++;
-        int digits = 0;
-        while (p < limit && *p >= '0' && *p <= '9') {
-            if (digits < 2) {
-                frac = frac * 10 + (*p - '0');
-                digits++;
-            }
-            p++;
+    int64_t val = 0;
+    while (p < limit && *p != '\n' && *p != '\r' && *p != '"') {
+        if (*p >= '0' && *p <= '9') {
+            val = val * 10 + (*p - '0');
         }
-        if (digits == 1) frac *= 10;
+        p++;
     }
     if (quoted && p < limit && *p == '"') p++;
-    while (p < limit && *p != '\n' && *p != '\r') p++;
-    if (p < limit && *p == '\r') p++;
-    if (p < limit && *p == '\n') p++;
-
-    int64_t cents = whole * 100 + frac;
-    return neg ? -cents : cents;
+    while (p < limit && (*p == '\r' || *p == '\n')) {
+        p++;
+    }
+    return neg ? -val : val;
 }
 
 size_t find_fast_split(const char* data, size_t size, size_t target) {
-    size_t cur_pos = target;
-    while (cur_pos < size) {
-        const char* nl_ptr = (const char*)std::memchr(data + cur_pos, '\n', size - cur_pos);
+    size_t idx = target;
+    while (idx < size) {
+        const char* nl_ptr = (const char*)std::memchr(data + idx, '\n', size - idx);
         if (!nl_ptr) return size;
         size_t nl = nl_ptr - data;
 
@@ -258,6 +246,7 @@ size_t find_fast_split(const char* data, size_t size, size_t target) {
             
             // Find line start
             size_t search_back = (nl > 1000) ? nl - 1000 : 0;
+            size_t prev_nl = search_back;
             const char* cur = data + nl - 1;
             while (cur >= data + search_back && *cur != '\n') cur--;
             size_t line_start = (cur >= data + search_back) ? (cur - data + 1) : 0;
@@ -271,12 +260,12 @@ size_t find_fast_split(const char* data, size_t size, size_t target) {
                 for (size_t q = line_start; q < nl; ++q) {
                     if (data[q] == '"') line_quotes++;
                 }
-                if ((line_quotes % 2) == 0) {
-                    return nl + 1; // Valid record boundary!
+                if (line_quotes % 2 == 0) {
+                    return nl + 1;
                 }
             }
         }
-        cur_pos = nl + 1;
+        idx = nl + 1;
     }
     return size;
 }
@@ -329,7 +318,7 @@ int main(int argc, char** argv) {
         return id;
     };
 
-    std::vector<int16_t> region_to_country(1000005, -1);
+    std::vector<int16_t> region_to_country(1000000, -1);
 
     const char* rp = rf.data;
     const char* r_limit = rf.data + rf.size;
@@ -406,9 +395,6 @@ int main(int argc, char** argv) {
     split_points.push_back(mf.size);
 
     std::vector<std::vector<CountryStats>> thread_stats(num_threads, std::vector<CountryStats>(num_countries));
-    std::vector<std::vector<uint64_t>> thread_entries(num_threads);
-    std::vector<std::vector<uint32_t>> thread_cid_offsets(num_threads, std::vector<uint32_t>(num_countries + 1, 0));
-
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
@@ -419,8 +405,9 @@ int main(int argc, char** argv) {
             if (start >= end) return;
 
             auto& stats = thread_stats[t];
-            auto& entries = thread_entries[t];
-            entries.reserve(65536);
+            for (auto& cs : stats) {
+                cs.name_hashes.reserve(128);
+            }
 
             const char* p = mf.data + start;
             const char* limit = mf.data + end;
@@ -460,26 +447,14 @@ int main(int argc, char** argv) {
                 }
                 cs.sum_name_len += name_len;
                 cs.sum_note_len += note_len;
-
-                entries.push_back(((uint64_t)cid << 48) | (name_hash & 0x0000FFFFFFFFFFFFULL));
+                cs.name_hashes.push_back(name_hash);
             }
 
-            // Single sort + unique on flat contiguous 64-bit entries
-            if (!entries.empty()) {
-                std::sort(entries.begin(), entries.end());
-                entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
-
-                // Build O(1) cid offset index
-                auto& offsets = thread_cid_offsets[t];
-                size_t cur_e = 0;
-                size_t total_e = entries.size();
-                for (size_t cid = 0; cid < num_countries; ++cid) {
-                    offsets[cid] = (uint32_t)cur_e;
-                    while (cur_e < total_e && (entries[cur_e] >> 48) == cid) {
-                        cur_e++;
-                    }
+            for (auto& cs : stats) {
+                if (!cs.name_hashes.empty()) {
+                    std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
+                    cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
                 }
-                offsets[num_countries] = (uint32_t)total_e;
             }
         });
     }
@@ -500,8 +475,6 @@ int main(int argc, char** argv) {
             std::string& out = thread_outputs[t];
             out.reserve((c_end - c_start) * 256);
             char line_buf[2048];
-            std::vector<uint64_t> cid_hashes;
-            cid_hashes.reserve(4096);
 
             for (size_t cid = c_start; cid < c_end; ++cid) {
                 CountryStats combined;
@@ -525,23 +498,22 @@ int main(int argc, char** argv) {
 
                 if (combined.count == 0) continue;
 
-                // Deduplicate unique names across threads using O(1) slice offsets
+                // Robust Phase 2 deduplication
                 size_t unique_names = 0;
                 if (combined.count == 1) {
                     unique_names = 1;
                 } else {
-                    cid_hashes.clear();
+                    std::vector<uint64_t> all_hashes;
+                    size_t total_h = 0;
+                    for (size_t pt = 0; pt < num_threads; ++pt) total_h += thread_stats[pt][cid].name_hashes.size();
+                    all_hashes.reserve(total_h);
                     for (size_t pt = 0; pt < num_threads; ++pt) {
-                        uint32_t st = thread_cid_offsets[pt][cid];
-                        uint32_t en = thread_cid_offsets[pt][cid + 1];
-                        if (en > st) {
-                            const auto& entries = thread_entries[pt];
-                            cid_hashes.insert(cid_hashes.end(), entries.begin() + st, entries.begin() + en);
-                        }
+                        const auto& nh = thread_stats[pt][cid].name_hashes;
+                        all_hashes.insert(all_hashes.end(), nh.begin(), nh.end());
                     }
-                    std::sort(cid_hashes.begin(), cid_hashes.end());
-                    cid_hashes.erase(std::unique(cid_hashes.begin(), cid_hashes.end()), cid_hashes.end());
-                    unique_names = cid_hashes.size();
+                    std::sort(all_hashes.begin(), all_hashes.end());
+                    all_hashes.erase(std::unique(all_hashes.begin(), all_hashes.end()), all_hashes.end());
+                    unique_names = all_hashes.size();
                 }
 
                 const std::string& cname = country_names[cid];
@@ -586,6 +558,7 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
+
 
     return 0;
 }
