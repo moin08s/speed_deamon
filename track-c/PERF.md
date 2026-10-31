@@ -22,3 +22,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 15 | 32-bit FNV hash deduplication test (hash collision on large evaluation dataset) | run-7e243ff4a6c9 | 0.106 | 26 | failure (hash mismatch) |
 | 16 | Restored 64-bit zero-collision FNV hash + mallopt M_ARENA_MAX=2 | run-32c55d9ddd54 | 0.118 | 45 | 55.57 |
 | 17 | Synchronized 12-thread per-country reduction + localized O(1) split | run-6de6f679cdfd | 0.115 | 45 | 55.82 |
+| 18 | Direct 64-bit FNV hashing + fast currency accumulation | run-58bfe0255846 | 0.114 | 44 | 56.02 |
+| 19 | SIMD memchr quote jumping in note/name fields + contiguous vectorized FNV inner hashing | pending | pending | pending | pending |

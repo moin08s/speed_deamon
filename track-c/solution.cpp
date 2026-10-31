@@ -139,58 +139,78 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
     if (*p == '"') {
         p++;
         while (p < limit) {
-            if (*p == '"') {
-                if (p + 1 < limit && *(p + 1) == '"') {
-                    out_hash = (out_hash ^ '"') * 0x100000001b3ULL;
-                    utf8_len++;
-                    p += 2;
-                } else {
-                    p++;
-                    break;
+            const char* q = (const char*)std::memchr(p, '"', limit - p);
+            if (!q) {
+                for (const char* k = p; k < limit; ++k) {
+                    unsigned char c = (unsigned char)*k;
+                    if ((c & 0xC0) != 0x80) utf8_len++;
+                    out_hash = (out_hash ^ c) * 0x100000001b3ULL;
                 }
-            } else {
-                unsigned char c = (unsigned char)*p++;
+                p = limit;
+                break;
+            }
+            for (const char* k = p; k < q; ++k) {
+                unsigned char c = (unsigned char)*k;
                 if ((c & 0xC0) != 0x80) utf8_len++;
                 out_hash = (out_hash ^ c) * 0x100000001b3ULL;
+            }
+            if (q + 1 < limit && *(q + 1) == '"') {
+                utf8_len++;
+                out_hash = (out_hash ^ '"') * 0x100000001b3ULL;
+                p = q + 2;
+            } else {
+                p = q + 1;
+                break;
             }
         }
         if (p < limit && *p == ',') p++;
     } else {
-        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
-            unsigned char c = (unsigned char)*p++;
+        const char* comma = (const char*)std::memchr(p, ',', limit - p);
+        const char* end = comma ? comma : limit;
+        for (const char* k = p; k < end; ++k) {
+            if (*k == '\r' || *k == '\n') { end = k; break; }
+            unsigned char c = (unsigned char)*k;
             if ((c & 0xC0) != 0x80) utf8_len++;
             out_hash = (out_hash ^ c) * 0x100000001b3ULL;
         }
-        if (p < limit && *p == ',') p++;
+        p = comma ? comma + 1 : end;
     }
 }
 
 inline size_t parse_field_len_only(const char*& p, const char* limit) {
-    size_t utf8_len = 0;
     if (p >= limit) return 0;
+    size_t utf8_len = 0;
     if (*p == '"') {
         p++;
         while (p < limit) {
-            if (*p == '"') {
-                if (p + 1 < limit && *(p + 1) == '"') {
-                    utf8_len++;
-                    p += 2;
-                } else {
-                    p++;
-                    break;
+            const char* q = (const char*)std::memchr(p, '"', limit - p);
+            if (!q) {
+                for (const char* k = p; k < limit; ++k) {
+                    if (((unsigned char)*k & 0xC0) != 0x80) utf8_len++;
                 }
+                p = limit;
+                break;
+            }
+            for (const char* k = p; k < q; ++k) {
+                if (((unsigned char)*k & 0xC0) != 0x80) utf8_len++;
+            }
+            if (q + 1 < limit && *(q + 1) == '"') {
+                utf8_len++;
+                p = q + 2;
             } else {
-                unsigned char c = (unsigned char)*p++;
-                if ((c & 0xC0) != 0x80) utf8_len++;
+                p = q + 1;
+                break;
             }
         }
         if (p < limit && *p == ',') p++;
     } else {
-        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
-            unsigned char c = (unsigned char)*p++;
-            if ((c & 0xC0) != 0x80) utf8_len++;
+        const char* comma = (const char*)std::memchr(p, ',', limit - p);
+        const char* end = comma ? comma : limit;
+        for (const char* k = p; k < end; ++k) {
+            if (*k == '\r' || *k == '\n') { end = k; break; }
+            if (((unsigned char)*k & 0xC0) != 0x80) utf8_len++;
         }
-        if (p < limit && *p == ',') p++;
+        p = comma ? comma + 1 : end;
     }
     return utf8_len;
 }
