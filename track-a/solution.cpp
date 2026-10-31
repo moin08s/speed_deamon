@@ -184,8 +184,10 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
     const char* p = buf + start;
     const char* limit = buf + end;
 
+    size_t chunk_bytes = end - start;
+    size_t est_per_hour = (chunk_bytes / 50) / 72 + 64;
     for (size_t h = 0; h < 72; ++h) {
-        td.hour_records[h].reserve(1024);
+        td.hour_records[h].reserve(est_per_hour);
     }
 
     while (p < limit) {
@@ -295,7 +297,8 @@ int main(int argc, char** argv) {
     std::cin.tie(NULL);
 
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 2);
+    mallopt(M_ARENA_MAX, 1);
+    mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
@@ -357,7 +360,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Phase 2: Parallel Reduction by Hour
+    // Phase 2: Ultra-Fast Parallel Counting Reduction by Hour
     std::vector<std::string> thread_outputs(num_threads);
     threads.clear();
 
@@ -372,88 +375,80 @@ int main(int argc, char** argv) {
             std::string& out_buf = thread_outputs[t];
             out_buf.reserve((h_end - h_start) * 2000 * 96);
 
-            struct EpData {
-                uint32_t count = 0;
-                uint32_t errors = 0;
-                uint32_t inlined[4];
-                std::vector<uint32_t> overflow;
-
-                inline void add(uint32_t lat, uint8_t is_err) {
-                    if (count < 4) {
-                        inlined[count] = lat;
-                    } else if (count == 4) {
-                        overflow.clear();
-                        overflow.reserve(16);
-                        overflow.insert(overflow.end(), inlined, inlined + 4);
-                        overflow.push_back(lat);
-                    } else {
-                        overflow.push_back(lat);
-                    }
-                    count++;
-                    if (is_err) errors++;
-                }
-
-                inline void reset() {
-                    count = 0;
-                    errors = 0;
-                    overflow.clear();
-                }
-            };
-
-            std::vector<EpData> ep_data(num_eps);
-            std::vector<uint32_t> active_eps;
-            active_eps.reserve(2048);
+            std::vector<uint32_t> ep_counts(num_eps);
+            std::vector<uint32_t> ep_errors(num_eps);
+            std::vector<uint32_t> ep_offsets(num_eps + 1);
+            std::vector<uint32_t> cur_pos(num_eps + 1);
+            std::vector<uint32_t> lat_pool;
+            lat_pool.reserve(65536);
 
             char line_buf[2048];
 
             for (size_t h = h_start; h < h_end; ++h) {
-                active_eps.clear();
+                size_t total_recs = 0;
+                for (size_t pt = 0; pt < num_threads; ++pt) {
+                    total_recs += parse_data[pt].hour_records[h].size();
+                }
+                if (total_recs == 0) continue;
+
+                std::fill(ep_counts.begin(), ep_counts.end(), 0);
+                std::fill(ep_errors.begin(), ep_errors.end(), 0);
 
                 for (size_t pt = 0; pt < num_threads; ++pt) {
                     const auto& recs = parse_data[pt].hour_records[h];
                     const auto& remap_eid = parse_data[pt].remap_eid;
-
                     for (const auto& rec : recs) {
                         uint32_t gid = remap_eid[rec.eid_and_err & 0x7FFF];
-                        auto& ed = ep_data[gid];
-                        if (ed.count == 0) {
-                            active_eps.push_back(gid);
-                        }
-                        ed.add(rec.lat, (uint8_t)(rec.eid_and_err >> 15));
+                        ep_counts[gid]++;
+                        if (rec.eid_and_err & 0x8000) ep_errors[gid]++;
+                    }
+                }
+
+                ep_offsets[0] = 0;
+                for (size_t i = 0; i < num_eps; ++i) {
+                    ep_offsets[i + 1] = ep_offsets[i] + ep_counts[i];
+                }
+                std::copy(ep_offsets.begin(), ep_offsets.end(), cur_pos.begin());
+
+                if (lat_pool.size() < total_recs) {
+                    lat_pool.resize(total_recs);
+                }
+
+                for (size_t pt = 0; pt < num_threads; ++pt) {
+                    const auto& recs = parse_data[pt].hour_records[h];
+                    const auto& remap_eid = parse_data[pt].remap_eid;
+                    for (const auto& rec : recs) {
+                        uint32_t gid = remap_eid[rec.eid_and_err & 0x7FFF];
+                        uint32_t pos = cur_pos[gid]++;
+                        lat_pool[pos] = rec.lat;
                     }
                     std::vector<RawRecord>().swap(parse_data[pt].hour_records[h]);
                 }
 
-                if (active_eps.empty()) continue;
-
-                std::sort(active_eps.begin(), active_eps.end());
-
                 const char* hr_str = GLOBAL_HOURS[h];
 
-                for (uint32_t gid : active_eps) {
-                    auto& ed = ep_data[gid];
-                    size_t n = ed.count;
+                for (size_t gid = 0; gid < num_eps; ++gid) {
+                    uint32_t n = ep_counts[gid];
                     if (n == 0) continue;
 
-                    size_t idx50 = (50ULL * n + 99) / 100 - 1;
-                    size_t idx95 = (95ULL * n + 99) / 100 - 1;
-                    size_t idx99 = (99ULL * n + 99) / 100 - 1;
+                    uint32_t st = ep_offsets[gid];
+                    uint32_t* sub = &lat_pool[st];
 
                     uint32_t p50, p95, p99;
                     if (n == 1) {
-                        p50 = p95 = p99 = ed.inlined[0];
+                        p50 = p95 = p99 = sub[0];
                     } else if (n == 2) {
-                        uint32_t a = ed.inlined[0], b = ed.inlined[1];
+                        uint32_t a = sub[0], b = sub[1];
                         if (a > b) std::swap(a, b);
                         p50 = a; p95 = b; p99 = b;
                     } else if (n == 3) {
-                        uint32_t a = ed.inlined[0], b = ed.inlined[1], c = ed.inlined[2];
+                        uint32_t a = sub[0], b = sub[1], c = sub[2];
                         if (a > b) std::swap(a, b);
                         if (b > c) std::swap(b, c);
                         if (a > b) std::swap(a, b);
                         p50 = b; p95 = c; p99 = c;
                     } else if (n == 4) {
-                        uint32_t a = ed.inlined[0], b = ed.inlined[1], c = ed.inlined[2], d = ed.inlined[3];
+                        uint32_t a = sub[0], b = sub[1], c = sub[2], d = sub[3];
                         if (a > b) std::swap(a, b);
                         if (c > d) std::swap(c, d);
                         if (a > c) std::swap(a, c);
@@ -461,23 +456,26 @@ int main(int argc, char** argv) {
                         if (b > c) std::swap(b, c);
                         p50 = b; p95 = d; p99 = d;
                     } else {
-                        auto& lat = ed.overflow;
+                        size_t idx50 = (50ULL * n + 99) / 100 - 1;
+                        size_t idx95 = (95ULL * n + 99) / 100 - 1;
+                        size_t idx99 = (99ULL * n + 99) / 100 - 1;
                         if (n <= 64) {
-                            std::sort(lat.begin(), lat.end());
-                            p50 = lat[idx50];
-                            p95 = lat[idx95];
-                            p99 = lat[idx99];
+                            std::sort(sub, sub + n);
+                            p50 = sub[idx50];
+                            p95 = sub[idx95];
+                            p99 = sub[idx99];
                         } else {
-                            std::nth_element(lat.begin(), lat.begin() + idx50, lat.end());
-                            p50 = lat[idx50];
-                            std::nth_element(lat.begin() + idx50 + 1, lat.begin() + idx95, lat.end());
-                            p95 = lat[idx95];
-                            std::nth_element(lat.begin() + idx95 + 1, lat.begin() + idx99, lat.end());
-                            p99 = lat[idx99];
+                            std::nth_element(sub, sub + idx50, sub + n);
+                            p50 = sub[idx50];
+                            std::nth_element(sub + idx50 + 1, sub + idx95, sub + n);
+                            p95 = sub[idx95];
+                            std::nth_element(sub + idx95 + 1, sub + idx99, sub + n);
+                            p99 = sub[idx99];
                         }
                     }
 
-                    uint64_t ppm = (uint64_t)ed.errors * 1000000ULL / n;
+                    uint32_t err = ep_errors[gid];
+                    uint64_t ppm = (uint64_t)err * 1000000ULL / n;
 
                     const std::string& ep_str = global_endpoints[gid];
 
@@ -496,13 +494,12 @@ int main(int argc, char** argv) {
                     *p++ = ' ';
                     p = fast_u32(p, p99);
                     *p++ = ' ';
-                    p = fast_u32(p, ed.errors);
+                    p = fast_u32(p, err);
                     *p++ = ' ';
                     p = fast_u64(p, ppm);
                     *p++ = '\n';
 
                     out_buf.append(line_buf, p - line_buf);
-                    ed.reset();
                 }
             }
         });

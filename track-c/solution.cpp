@@ -507,6 +507,8 @@ int main(int argc, char** argv) {
             std::string& out = thread_outputs[t];
             out.reserve((c_end - c_start) * 256);
             char line_buf[2048];
+            std::vector<uint64_t> all_hashes;
+            all_hashes.reserve(4096);
 
             for (size_t cid = c_start; cid < c_end; ++cid) {
                 CountryStats combined;
@@ -535,10 +537,7 @@ int main(int argc, char** argv) {
                 if (combined.count == 1) {
                     unique_names = 1;
                 } else {
-                    std::vector<uint64_t> all_hashes;
-                    size_t total_h = 0;
-                    for (size_t pt = 0; pt < num_threads; ++pt) total_h += thread_stats[pt][cid].name_hashes.size();
-                    all_hashes.reserve(total_h);
+                    all_hashes.clear();
                     for (size_t pt = 0; pt < num_threads; ++pt) {
                         const auto& nh = thread_stats[pt][cid].name_hashes;
                         all_hashes.insert(all_hashes.end(), nh.begin(), nh.end());
