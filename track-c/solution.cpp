@@ -117,6 +117,9 @@ inline char* fast_format_cents(char* p, int64_t cents) {
 
 inline int64_t parse_field_int(const char*& p, const char* limit) {
     if (p >= limit) return 0;
+    if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
+        p += 3;
+    }
     bool quoted = (*p == '"');
     if (quoted) p++;
     int64_t val = 0;
@@ -162,15 +165,12 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
         }
         if (p < limit && *p == ',') p++;
     } else {
-        const char* comma = (const char*)std::memchr(p, ',', limit - p);
-        const char* end = comma ? comma : limit;
-        for (const char* k = p; k < end; ++k) {
-            if (*k == '\r' || *k == '\n') { end = k; break; }
-            unsigned char c = (unsigned char)*k;
+        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
+            unsigned char c = (unsigned char)*p++;
             if ((c & 0xC0) != 0x80) utf8_len++;
             out_hash = (out_hash ^ c) * 0x100000001b3ULL;
         }
-        p = comma ? comma + 1 : end;
+        if (p < limit && *p == ',') p++;
     }
 }
 
@@ -201,13 +201,11 @@ inline size_t parse_field_len_only(const char*& p, const char* limit) {
         }
         if (p < limit && *p == ',') p++;
     } else {
-        const char* comma = (const char*)std::memchr(p, ',', limit - p);
-        const char* end = comma ? comma : limit;
-        for (const char* k = p; k < end; ++k) {
-            if (*k == '\r' || *k == '\n') { end = k; break; }
-            if (((unsigned char)*k & 0xC0) != 0x80) utf8_len++;
+        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
+            unsigned char c = (unsigned char)*p++;
+            if ((c & 0xC0) != 0x80) utf8_len++;
         }
-        p = comma ? comma + 1 : end;
+        if (p < limit && *p == ',') p++;
     }
     return utf8_len;
 }
@@ -331,6 +329,8 @@ int main(int argc, char** argv) {
     };
 
     std::vector<int16_t> region_to_country(1000000, -1);
+    uint16_t code3_to_cid[32768];
+    std::memset(code3_to_cid, 0xff, sizeof(code3_to_cid));
 
     const char* rp = rf.data;
     const char* r_limit = rf.data + rf.size;
@@ -352,8 +352,22 @@ int main(int argc, char** argv) {
         const char* c_start = rp;
         while (rp < r_limit && *rp != '\r' && *rp != '\n') rp++;
         size_t c_len = rp - c_start;
-        uint16_t cid = get_country_id(c_start, c_len);
-        if (rid >= (int32_t)region_to_country.size()) {
+
+        uint16_t cid;
+        if (__builtin_expect(c_len == 3, 1)) {
+            uint32_t key = ((uint32_t)(c_start[0] & 0x1f) << 10) |
+                           ((uint32_t)(c_start[1] & 0x1f) << 5) |
+                           (uint32_t)(c_start[2] & 0x1f);
+            cid = code3_to_cid[key];
+            if (__builtin_expect(cid == 0xffff, 0)) {
+                cid = get_country_id(c_start, c_len);
+                code3_to_cid[key] = cid;
+            }
+        } else {
+            cid = get_country_id(c_start, c_len);
+        }
+
+        if (__builtin_expect(rid >= (int32_t)region_to_country.size(), 0)) {
             region_to_country.resize(rid + 10000, -1);
         }
         region_to_country[rid] = (int16_t)cid;
@@ -474,13 +488,6 @@ int main(int argc, char** argv) {
                     cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
                 }
             }
-#ifndef _WIN32
-            if (end > start) {
-                uintptr_t page_start = (uintptr_t)(mf.data + start) & ~4095ULL;
-                uintptr_t page_end = ((uintptr_t)(mf.data + end) + 4095ULL) & ~4095ULL;
-                madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
-            }
-#endif
         });
     }
 

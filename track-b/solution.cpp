@@ -280,6 +280,72 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<std:
 enum QueryType { QUERY_BOOL, QUERY_PHRASE };
 enum BoolOp { OP_AND, OP_OR, OP_NOT };
 
+template <typename T>
+inline void intersect_adaptive(const std::vector<T>& small, const T* big, size_t big_len, std::vector<T>& out) {
+    out.clear();
+    if (small.empty() || big_len == 0) return;
+    
+    if (big_len > (small.size() << 3)) {
+        out.reserve(small.size());
+        const T* big_end = big + big_len;
+        const T* cur = big;
+        for (T x : small) {
+            size_t step = 1;
+            while (cur + step < big_end && *(cur + step) < x) {
+                cur += step;
+                step <<= 1;
+            }
+            const T* high = (cur + step + 1 < big_end) ? (cur + step + 1) : big_end;
+            cur = std::lower_bound(cur, high, x);
+            if (cur == big_end) break;
+            if (*cur == x) {
+                out.push_back(x);
+                cur++;
+            }
+        }
+    } else {
+        out.reserve(small.size());
+        std::set_intersection(small.begin(), small.end(),
+                              big, big + big_len,
+                              std::back_inserter(out));
+    }
+}
+
+template <typename T>
+inline void difference_adaptive(const std::vector<T>& left, const T* right, size_t right_len, std::vector<T>& out) {
+    out.clear();
+    if (left.empty()) return;
+    if (right_len == 0) {
+        out = left;
+        return;
+    }
+    
+    if (right_len > (left.size() << 3)) {
+        out.reserve(left.size());
+        const T* right_end = right + right_len;
+        const T* cur = right;
+        for (T x : left) {
+            if (cur < right_end && *cur < x) {
+                size_t step = 1;
+                while (cur + step < right_end && *(cur + step) < x) {
+                    cur += step;
+                    step <<= 1;
+                }
+                const T* high = (cur + step + 1 < right_end) ? (cur + step + 1) : right_end;
+                cur = std::lower_bound(cur, high, x);
+            }
+            if (cur == right_end || *cur != x) {
+                out.push_back(x);
+            }
+        }
+    } else {
+        out.reserve(left.size());
+        std::set_difference(left.begin(), left.end(),
+                            right, right + right_len,
+                            std::back_inserter(out));
+    }
+}
+
 struct Query {
     QueryType type;
     std::vector<int> bool_terms;
@@ -619,11 +685,7 @@ int main(int argc, char** argv) {
                                     if (cur_res.empty()) break;
                                     auto [ptr_k, len_k] = get_postings(sorted_terms[k]);
                                     if (len_k == 0) { cur_res.clear(); break; }
-                                    temp.clear();
-                                    temp.reserve(cur_res.size());
-                                    std::set_intersection(cur_res.begin(), cur_res.end(),
-                                                          ptr_k, ptr_k + len_k,
-                                                          std::back_inserter(temp));
+                                    intersect_adaptive(cur_res, ptr_k, len_k, temp);
                                     cur_res = std::move(temp);
                                 }
                             }
@@ -641,11 +703,7 @@ int main(int argc, char** argv) {
                                     if (len_rhs == 0 || cur_res.empty()) {
                                         cur_res.clear();
                                     } else {
-                                        temp.clear();
-                                        temp.reserve(cur_res.size());
-                                        std::set_intersection(cur_res.begin(), cur_res.end(),
-                                                              ptr_rhs, ptr_rhs + len_rhs,
-                                                              std::back_inserter(temp));
+                                        intersect_adaptive(cur_res, ptr_rhs, len_rhs, temp);
                                         cur_res = std::move(temp);
                                     }
                                 } else if (op == OP_OR) {
@@ -662,10 +720,7 @@ int main(int argc, char** argv) {
                                     }
                                 } else if (op == OP_NOT) {
                                     if (len_rhs > 0 && !cur_res.empty()) {
-                                        temp.clear();
-                                        std::set_difference(cur_res.begin(), cur_res.end(),
-                                                            ptr_rhs, ptr_rhs + len_rhs,
-                                                            std::back_inserter(temp));
+                                        difference_adaptive(cur_res, ptr_rhs, len_rhs, temp);
                                         cur_res = std::move(temp);
                                     }
                                 }
@@ -698,11 +753,7 @@ int main(int argc, char** argv) {
                                     cur_res.clear();
                                     break;
                                 }
-                                temp.clear();
-                                temp.reserve(cur_res.size());
-                                std::set_intersection(cur_res.begin(), cur_res.end(),
-                                                      ptr_k, ptr_k + len_k,
-                                                      std::back_inserter(temp));
+                                intersect_adaptive(cur_res, ptr_k, len_k, temp);
                                 cur_res = std::move(temp);
                             }
 

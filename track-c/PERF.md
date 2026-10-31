@@ -23,4 +23,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 16 | Restored 64-bit zero-collision FNV hash + mallopt M_ARENA_MAX=2 | run-32c55d9ddd54 | 0.118 | 45 | 55.57 |
 | 17 | Synchronized 12-thread per-country reduction + localized O(1) split | run-6de6f679cdfd | 0.115 | 45 | 55.82 |
 | 18 | Direct 64-bit FNV hashing + fast currency accumulation | run-58bfe0255846 | 0.114 | 44 | 56.02 |
-| 19 | Parallel chunk split calculation + streaming madvise eviction + SIMD memchr quote jumping | pending | pending | pending | pending |
+| 19 | Parallel chunk split + SIMD quote jumping (BOM check regression on hostile CSV) | run-65735e1c2ad0 | 0.123 | 46 | failure (hash mismatch) |
+| 20 | Restored UTF-8 BOM check on hostile CSV + 64KB direct O(1) 3-letter code lookup table for regions.csv + parallel boundary search | pending | pending | pending | pending |
