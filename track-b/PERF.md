@@ -28,4 +28,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 21 | Safe 524K FastTermTable + SIMD memchr phrase candidate scanner + pre-reserved intersection buffers | run-814865d0b459 | 0.926 | 129 | 48.86 |
 | 22 | Adaptive galloping binary search for skewed set intersections and differences (`len_big > 8 * len_small`) | run-bd78a42dea7b | 0.733 | 140 | 51.09 |
 | 23 | Symmetric adaptive galloping search (intersect_slices) + 2-term direct intersection without initial copy + immediate docs.txt madvise DONTNEED page cache eviction | run-5063e7bed17f | 0.701 | 144 | 51.12 |
-| 24 | AVX2 SIMD simultaneous char-pair phrase candidate search + zero-allocation TermView queries + 1-term BOOL fast path + doc-list Pass 2 scatter | run-73f427f11292 | 0.631 | 144 | 52.15 |
+| 24 | AVX2 SIMD simultaneous char-pair phrase candidate search + zero-allocation TermView queries + 1-term BOOL fast path + doc-list Pass 2 scatter | run-7c85aec550b9 | 0.609 | 149 | 52.59 |

@@ -116,6 +116,10 @@ inline char* fast_format_cents(char* p, int64_t cents) {
 }
 
 inline int64_t parse_field_int(const char*& p, const char* limit) {
+    if (p >= limit) return 0;
+    if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
+        p += 3;
+    }
     int64_t val = 0;
     while (p < limit && *p >= '0' && *p <= '9') {
         val = val * 10 + (*p++ - '0');
@@ -155,13 +159,12 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
         }
         if (p < limit && *p == ',') p++;
     } else {
-        const char* comma = (const char*)std::memchr(p, ',', limit - p);
-        const char* end_field = comma ? comma : limit;
-        utf8_len = end_field - p;
-        for (const char* k = p; k < end_field; ++k) {
-            out_hash = (out_hash ^ (unsigned char)*k) * 0x100000001b3ULL;
+        const char* s = p;
+        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') {
+            out_hash = (out_hash ^ (unsigned char)*p++) * 0x100000001b3ULL;
         }
-        p = comma ? (comma + 1) : limit;
+        utf8_len = p - s;
+        if (p < limit && *p == ',') p++;
     }
 }
 
@@ -188,14 +191,10 @@ inline size_t parse_field_len_only(const char*& p, const char* limit) {
         }
         if (p < limit && *p == ',') p++;
     } else {
-        const char* comma = (const char*)std::memchr(p, ',', limit - p);
-        if (comma) {
-            utf8_len = comma - p;
-            p = comma + 1;
-        } else {
-            utf8_len = limit - p;
-            p = limit;
-        }
+        const char* s = p;
+        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') p++;
+        utf8_len = p - s;
+        if (p < limit && *p == ',') p++;
     }
     return utf8_len;
 }
@@ -459,6 +458,13 @@ int main(int argc, char** argv) {
                 cs.sum_name_len += name_len;
                 cs.sum_note_len += note_len;
                 cs.name_hashes.push_back(name_hash);
+            }
+
+            for (auto& cs : stats) {
+                if (!cs.name_hashes.empty()) {
+                    std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
+                    cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
+                }
             }
         });
     }

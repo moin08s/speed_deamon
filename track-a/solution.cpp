@@ -360,6 +360,23 @@ int main(int argc, char** argv) {
         }
     }
 
+    // In parallel across 12 threads: remap local eid to global eid in-place!
+    threads.clear();
+    for (size_t t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&, t]() {
+            auto& td = parse_data[t];
+            const auto& remap = td.remap_eid;
+            for (size_t h = 0; h < 72; ++h) {
+                for (auto& rec : td.hour_records[h]) {
+                    uint16_t err = rec.eid_and_err & 0x8000;
+                    uint16_t lid = rec.eid_and_err & 0x7FFF;
+                    rec.eid_and_err = err | (uint16_t)remap[lid];
+                }
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
     // Phase 2: Ultra-Fast Parallel Counting Reduction by Hour
     std::vector<std::string> thread_outputs(num_threads);
     threads.clear();
@@ -396,9 +413,8 @@ int main(int argc, char** argv) {
 
                 for (size_t pt = 0; pt < num_threads; ++pt) {
                     const auto& recs = parse_data[pt].hour_records[h];
-                    const auto& remap_eid = parse_data[pt].remap_eid;
                     for (const auto& rec : recs) {
-                        uint32_t gid = remap_eid[rec.eid_and_err & 0x7FFF];
+                        uint32_t gid = rec.eid_and_err & 0x7FFF;
                         ep_counts[gid]++;
                         if (rec.eid_and_err & 0x8000) ep_errors[gid]++;
                     }
@@ -416,9 +432,8 @@ int main(int argc, char** argv) {
 
                 for (size_t pt = 0; pt < num_threads; ++pt) {
                     const auto& recs = parse_data[pt].hour_records[h];
-                    const auto& remap_eid = parse_data[pt].remap_eid;
                     for (const auto& rec : recs) {
-                        uint32_t gid = remap_eid[rec.eid_and_err & 0x7FFF];
+                        uint32_t gid = rec.eid_and_err & 0x7FFF;
                         uint32_t pos = cur_pos[gid]++;
                         lat_pool[pos] = rec.lat;
                     }
