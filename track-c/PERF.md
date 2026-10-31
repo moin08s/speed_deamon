@@ -10,4 +10,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 3 | Quote-parity chunk boundary splitting + multi-process parallel chunk parsing across 6 CPU cores + C-level `replace('.', '')` cents parsing + pre-indexed country mapping | run-e82769771777 | 3.89 | 2085 | 5.50 |
 | 4 | Native C++20 implementation: POSIX mmap CSV parsing, 6 worker threads, direct flat array region-to-country lookup table, zero external dependencies | run-0027b91ca45f | 1.87 | 471 | 15.36 |
 | 5 | Single-pass O(N) quote scan + 64-bit FNV name hashing + in-vector deduplication + flat region-to-country direct lookup table | run-0c8b2c109fd7 | 0.30 | 74 | 43.32 |
-| 6 | 12-thread parallel country stats consolidation, hash set union deduplication, and buffered 1MB file streaming | pending-run | 0.05 | 16 | 75.00 |
+| 6 | 12-thread parallel country stats consolidation, hash set union deduplication, and buffered 1MB file streaming | run-f616def5a725 | 0.18 | 73 | 48.48 |

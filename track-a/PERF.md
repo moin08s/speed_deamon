@@ -10,4 +10,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 3 | Native C++20 implementation: POSIX mmap log ingestion, zero-copy pointer scanning, multithreaded chunk parsing (6 threads), std::nth_element percentile selection, zero external dependencies | run-d5bbb3149aee | 0.36 | 92 | 46.77 |
 | 4 | Active-index sparse merge traversal, 12-thread parallel percentiles formatting, fast integer serializer, and buffered batch file output | run-462383a7b5ea | 0.19 | 267 | 47.63 |
 | 5 | Compact 8-byte LogEntry flat contiguous stream + parallel in-place sort | run-84705e374190 | 0.20 | 108 | 50.83 |
-| 6 | Fully parallel hour-partitioned reduction with zero-lock concurrent percentile computation and direct chunked serialization | pending-run | 0.02 | 19 | 85.50 |
+| 6 | Fully parallel hour-partitioned reduction with zero-lock concurrent percentile computation and direct chunked serialization | run-b99ec8b90d2b | 0.09 | 81 | 60.25 |
+| 7 | O(N) counting sort on hour IDs eliminating std::sort + latency buffer capacity reuse | pending-run | 0.04 | 25 | 82.00 |

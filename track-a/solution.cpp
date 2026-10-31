@@ -309,18 +309,20 @@ int main(int argc, char** argv) {
                 rec.eid = (uint16_t)e_map[rec.eid];
             }
 
-            std::sort(td.records.begin(), td.records.end(), [](const RawRecord& a, const RawRecord& b) {
-                return a.hid < b.hid;
-            });
-
-            // Build hour index
-            td.hour_offsets.assign(num_hours + 1, (uint32_t)td.records.size());
-            uint32_t cur_h = 0;
-            for (size_t i = 0; i < td.records.size(); ++i) {
-                while (cur_h <= td.records[i].hid) {
-                    td.hour_offsets[cur_h++] = (uint32_t)i;
-                }
+            // O(N) counting sort on hour IDs
+            std::vector<uint32_t> counts(num_hours + 1, 0);
+            for (const auto& rec : td.records) {
+                counts[rec.hid + 1]++;
             }
+            for (size_t h = 0; h < num_hours; ++h) {
+                counts[h + 1] += counts[h];
+            }
+            td.hour_offsets = counts;
+            std::vector<RawRecord> sorted_records(td.records.size());
+            for (const auto& rec : td.records) {
+                sorted_records[counts[rec.hid]++] = rec;
+            }
+            td.records = std::move(sorted_records);
         });
     }
     for (auto& t : threads) t.join();
