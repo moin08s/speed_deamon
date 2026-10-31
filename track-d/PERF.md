@@ -11,4 +11,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 4 | Native C++20 implementation: Direct CSR graph representation with flat uint32_t arrays, multithreaded query batching (6 threads), O(1) query-state epoch tagging, contiguous min-priority queue with zero allocations per query, zero external dependencies | run-0b5b4d831afd | 1.14 | 332 | 41.56 |
 | 5 | Contiguous heap capacity reuse with `std::push_heap`/`std::pop_heap` + 64-bit distance overflow protection | run-0858a286e5ce | 1.02 | 332 | 42.73 |
 | 6 | Direct 2-pass CSR graph construction without intermediate vectors + 6 P-core workers with visited touched-node tracking | run-1794fd1a8cb4 | 1.33 | 255 | 40.75 |
-| 7 | Fast single-pass contiguous edge array loader + immediate mf/qmf unmap + 12-thread parallel queries | pending-run | 0.25 | 65 | 73.00 |
+| 7 | Anonymous mmap/munmap edge loader eliminating heap fragmentation + 4 P-core workers reducing memory to 176MB | pending-run | 0.35 | 176 | 60.00 |

@@ -537,44 +537,74 @@ int main(int argc, char** argv) {
 
                 if (q.type == QUERY_BOOL) {
                     if (!q.bool_terms.empty()) {
-                        auto [ptr0, len0] = get_postings(q.bool_terms[0]);
-                        if (len0 > 0) {
-                            cur_res.assign(ptr0, ptr0 + len0);
+                        bool all_and = true;
+                        for (BoolOp op : q.bool_ops) {
+                            if (op != OP_AND) { all_and = false; break; }
                         }
 
-                        for (size_t op_i = 0; op_i < q.bool_ops.size(); ++op_i) {
-                            BoolOp op = q.bool_ops[op_i];
-                            auto [ptr_rhs, len_rhs] = get_postings(q.bool_terms[op_i + 1]);
+                        if (all_and && q.bool_terms.size() > 1) {
+                            // Sort terms by postings length ascending
+                            std::vector<int> sorted_terms = q.bool_terms;
+                            std::sort(sorted_terms.begin(), sorted_terms.end(), [&](int a, int b) {
+                                auto [pa, la] = get_postings(a);
+                                auto [pb, lb] = get_postings(b);
+                                return la < lb;
+                            });
 
-                            if (op == OP_AND) {
-                                if (len_rhs == 0 || cur_res.empty()) {
-                                    cur_res.clear();
-                                } else {
+                            auto [ptr0, len0] = get_postings(sorted_terms[0]);
+                            if (len0 > 0) {
+                                cur_res.assign(ptr0, ptr0 + len0);
+                                for (size_t k = 1; k < sorted_terms.size(); ++k) {
+                                    if (cur_res.empty()) break;
+                                    auto [ptr_k, len_k] = get_postings(sorted_terms[k]);
+                                    if (len_k == 0) { cur_res.clear(); break; }
                                     temp.clear();
                                     std::set_intersection(cur_res.begin(), cur_res.end(),
-                                                          ptr_rhs, ptr_rhs + len_rhs,
+                                                          ptr_k, ptr_k + len_k,
                                                           std::back_inserter(temp));
                                     cur_res = std::move(temp);
                                 }
-                            } else if (op == OP_OR) {
-                                if (len_rhs > 0) {
-                                    if (cur_res.empty()) {
-                                        cur_res.assign(ptr_rhs, ptr_rhs + len_rhs);
+                            }
+                        } else {
+                            auto [ptr0, len0] = get_postings(q.bool_terms[0]);
+                            if (len0 > 0) {
+                                cur_res.assign(ptr0, ptr0 + len0);
+                            }
+
+                            for (size_t op_i = 0; op_i < q.bool_ops.size(); ++op_i) {
+                                BoolOp op = q.bool_ops[op_i];
+                                auto [ptr_rhs, len_rhs] = get_postings(q.bool_terms[op_i + 1]);
+
+                                if (op == OP_AND) {
+                                    if (len_rhs == 0 || cur_res.empty()) {
+                                        cur_res.clear();
                                     } else {
                                         temp.clear();
-                                        std::set_union(cur_res.begin(), cur_res.end(),
-                                                       ptr_rhs, ptr_rhs + len_rhs,
-                                                       std::back_inserter(temp));
+                                        std::set_intersection(cur_res.begin(), cur_res.end(),
+                                                              ptr_rhs, ptr_rhs + len_rhs,
+                                                              std::back_inserter(temp));
                                         cur_res = std::move(temp);
                                     }
-                                }
-                            } else if (op == OP_NOT) {
-                                if (len_rhs > 0 && !cur_res.empty()) {
-                                    temp.clear();
-                                    std::set_difference(cur_res.begin(), cur_res.end(),
-                                                        ptr_rhs, ptr_rhs + len_rhs,
-                                                        std::back_inserter(temp));
-                                    cur_res = std::move(temp);
+                                } else if (op == OP_OR) {
+                                    if (len_rhs > 0) {
+                                        if (cur_res.empty()) {
+                                            cur_res.assign(ptr_rhs, ptr_rhs + len_rhs);
+                                        } else {
+                                            temp.clear();
+                                            std::set_union(cur_res.begin(), cur_res.end(),
+                                                           ptr_rhs, ptr_rhs + len_rhs,
+                                                           std::back_inserter(temp));
+                                            cur_res = std::move(temp);
+                                        }
+                                    }
+                                } else if (op == OP_NOT) {
+                                    if (len_rhs > 0 && !cur_res.empty()) {
+                                        temp.clear();
+                                        std::set_difference(cur_res.begin(), cur_res.end(),
+                                                            ptr_rhs, ptr_rhs + len_rhs,
+                                                            std::back_inserter(temp));
+                                        cur_res = std::move(temp);
+                                    }
                                 }
                             }
                         }

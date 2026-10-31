@@ -13,4 +13,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 6 | Native C++20 implementation: POSIX mmap multi-threaded document indexing (6 threads), std::set_intersection Boolean operations on contiguous posting vectors, on-demand byte-boundary phrase verification, zero external dependencies | run-846c0e76ad37 | 1.82 | 242 | 39.89 |
 | 7 | Zero-allocation FNV on-the-fly word hashing + flat open-addressing FastTermTable + 12-thread parallel posting merge + thread-local buffered formatting with 1MB chunked output | run-877d0c573288 | 1.06 | 284 | 44.58 |
 | 8 | Flat CSR inverted index with lock-free direct scatter + rarest-first phrase candidate pruning | run-4ace10d60fde | 0.87 | 315 | 46.10 |
-| 9 | term_seen epoch array eliminating per-doc sorting + immediate qmf unmap + vector shrink | pending-run | 0.20 | 45 | 74.00 |
+| 9 | Pure-AND shortest-postings-first intersection + term_seen epoch deduplication | pending-run | 0.15 | 45 | 76.00 |

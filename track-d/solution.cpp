@@ -125,7 +125,12 @@ void load_graph(const char* path, CSRGraph& g) {
     g.bwd_head.assign(g.n + 1, 0);
 
     struct Edge { uint32_t u, v, w; };
-    std::vector<Edge> edges(g.m);
+    size_t edges_bytes = (size_t)g.m * sizeof(Edge);
+#ifdef _WIN32
+    Edge* edges = (Edge*)VirtualAlloc(NULL, edges_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+    Edge* edges = (Edge*)mmap(nullptr, edges_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
 
     for (uint32_t i = 0; i < g.m; ++i) {
         uint32_t u = parse_uint(p, limit);
@@ -161,6 +166,12 @@ void load_graph(const char* path, CSRGraph& g) {
         g.bwd_dst[pb] = e.u;
         g.bwd_w[pb] = e.w;
     }
+
+#ifdef _WIN32
+    VirtualFree(edges, 0, MEM_RELEASE);
+#else
+    munmap(edges, edges_bytes);
+#endif
 }
 
 using Element = std::pair<uint64_t, uint32_t>; // (distance, node)
@@ -312,7 +323,7 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 12;
+    const size_t num_threads = 4;
     std::vector<std::string> thread_outputs(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
