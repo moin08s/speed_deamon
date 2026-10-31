@@ -14,4 +14,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 7 | In-place mmap regions parsing with 1024-slot CountryMap, parallel 12-thread per-country name hash collection + consolidation, immediate mmap unmap, fast buffer output | run-2cce13f9c122 | 0.168 | 70 | 49.98 |
 | 8 | Canonical alphabetical pre-indexing + parallel 12-thread per-country L1 cache reduction + MADV_DONTNEED immediate chunk page cache eviction + direct parallel thread string formatting | run-462128a0c66b | 0.171 | 48 | 51.40 |
 | 9 | Streaming 256KB madvise page eviction in parse loop + glibc single-arena restriction (mallopt M_ARENA_MAX=1) | run-1788cb47745a | 0.177 | 45 | 51.15 |
-| 10 | Robust two-level parallel deduplication (thread-local L1 sort + Phase 2 merge sort) with small-count bypass + mallopt M_ARENA_MAX=2 | pending | pending | pending | pending |
+| 10 | Robust two-level parallel deduplication (thread-local L1 sort + Phase 2 merge sort) with small-count bypass | run-2079be2556fa | 0.200 | 47 | 49.85 |
+| 11 | Clean zero-arena-fragmentation parallel reduction with zero external dependencies | pending | pending | pending | pending |

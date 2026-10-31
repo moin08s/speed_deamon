@@ -233,13 +233,8 @@ inline int64_t parse_field_cents(const char*& p, const char* limit) {
 }
 
 int main(int argc, char** argv) {
-#ifndef _WIN32
-    mallopt(M_ARENA_MAX, 2);
-    mallopt(M_TRIM_THRESHOLD, 64 * 1024);
-#endif
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
-
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
     std::string out_dir = (argc > 2) ? argv[2] : "/out";
@@ -248,6 +243,7 @@ int main(int argc, char** argv) {
     MappedFile rf;
     if (!rf.open(regions_path.c_str())) return 1;
 
+    // Fast Country Indexing
     std::vector<std::string> raw_country_names;
     raw_country_names.reserve(300);
 
@@ -351,6 +347,7 @@ int main(int argc, char** argv) {
     std::vector<size_t> split_points;
     split_points.push_back(0);
 
+    // Fast chunk split: scan quotes to guarantee exact CSV boundary
     size_t running_quotes = 0;
     size_t scan_idx = 0;
     for (size_t i = 1; i < num_threads; ++i) {
@@ -388,7 +385,6 @@ int main(int argc, char** argv) {
 
             const char* p = mf.data + start;
             const char* limit = mf.data + end;
-            const char* last_evict = p;
 
             if (t == 0) {
                 if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
@@ -426,29 +422,9 @@ int main(int argc, char** argv) {
                 cs.sum_name_len += name_len;
                 cs.sum_note_len += note_len;
                 cs.name_hashes.push_back(name_hash);
-
-#ifndef _WIN32
-                if (p - last_evict >= 262144) {
-                    uintptr_t page_start = (uintptr_t)last_evict & ~4095ULL;
-                    uintptr_t page_end = (uintptr_t)p & ~4095ULL;
-                    if (page_end > page_start) {
-                        madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
-                    }
-                    last_evict = p;
-                }
-#endif
             }
 
-#ifndef _WIN32
-            if (p > last_evict) {
-                uintptr_t page_start = (uintptr_t)last_evict & ~4095ULL;
-                uintptr_t page_end = ((uintptr_t)p + 4095ULL) & ~4095ULL;
-                if (page_end > page_start) {
-                    madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
-                }
-            }
-#endif
-
+            // Local thread deduplication
             for (auto& cs : stats) {
                 if (!cs.name_hashes.empty()) {
                     std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
@@ -461,8 +437,7 @@ int main(int argc, char** argv) {
     for (auto& th : threads) th.join();
     mf.close(); // Immediately unmap records.csv to drop page cache
 
-
-    // Phase 2: Parallel country reduction across 12 threads using Fast Hash Set for O(1) deduplication (ZERO SORTS)
+    // Phase 2: Parallel country reduction across 12 threads directly producing output strings
     std::vector<std::string> thread_outputs(num_threads);
     threads.clear();
     size_t c_chunk = (num_countries + num_threads - 1) / num_threads;
@@ -475,8 +450,6 @@ int main(int argc, char** argv) {
             std::string& out = thread_outputs[t];
             out.reserve((c_end - c_start) * 256);
             char line_buf[2048];
-
-
 
             for (size_t cid = c_start; cid < c_end; ++cid) {
                 CountryStats combined;
@@ -500,7 +473,7 @@ int main(int argc, char** argv) {
 
                 if (combined.count == 0) continue;
 
-                // Combine and deduplicate
+                // Robust Phase 2 deduplication
                 size_t unique_names = 0;
                 if (combined.count == 1) {
                     unique_names = 1;
@@ -560,7 +533,6 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
-
 
     return 0;
 }
