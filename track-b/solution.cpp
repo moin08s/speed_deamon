@@ -499,9 +499,14 @@ int main(int argc, char** argv) {
         uint32_t len;
     };
 
+    struct Posting {
+        uint32_t term_id;
+        uint32_t doc_id;
+    };
     struct ThreadIndex {
         std::vector<DocInfo> docs;
         std::vector<uint32_t> term_counts;
+        std::vector<Posting> postings;
     };
 
     std::vector<ThreadIndex> thread_indices(num_threads);
@@ -561,6 +566,7 @@ int main(int argc, char** argv) {
                             if (term_seen[term_id] != cur_epoch) {
                                 term_seen[term_id] = cur_epoch;
                                 t_idx.term_counts[term_id]++;
+                                t_idx.postings.push_back({(uint32_t)term_id, doc_id});
                             }
                         }
                     }
@@ -595,48 +601,17 @@ int main(int argc, char** argv) {
     uint32_t total_postings = term_offsets[num_terms];
     std::vector<uint32_t> postings_data(total_postings);
 
-    // Pass 2: Directly scatter into postings_data using doc list from Pass 1
+    // In-memory scatter into postings_data: zero string re-reading or re-hashing
     threads.clear();
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
             auto& starts = thread_start[t];
-            const auto& my_docs = thread_indices[t].docs;
-
-            std::vector<uint32_t> term_seen(num_terms, 0);
-            uint32_t cur_epoch = 1;
-
-            for (const auto& d : my_docs) {
-                uint32_t doc_id = d.doc_id;
-                const char* tp = mf.data + d.offset;
-                const char* line_end = tp + d.len;
-
-                if (cur_epoch == 0xFFFFFFF0) {
-                    std::fill(term_seen.begin(), term_seen.end(), 0);
-                    cur_epoch = 1;
-                }
-                while (tp < line_end) {
-                    while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
-                    if (tp >= line_end) break;
-                    const char* w_start = tp;
-                    uint64_t h = 0xcbf29ce484222325ULL;
-                    while (tp < line_end) {
-                        uint8_t ch = CHAR_MAP[(uint8_t)*tp];
-                        if (ch == 0) break;
-                        h = (h ^ ch) * 0x100000001b3ULL;
-                        tp++;
-                    }
-                    size_t w_len = tp - w_start;
-                    int term_id = term_table.find(w_start, w_len, h);
-                    if (term_id != -1) {
-                        if (term_seen[term_id] != cur_epoch) {
-                            term_seen[term_id] = cur_epoch;
-                            uint32_t slot = starts[term_id]++;
-                            postings_data[slot] = doc_id;
-                        }
-                    }
-                }
-                cur_epoch++;
+            const auto& posts = thread_indices[t].postings;
+            for (const auto& p : posts) {
+                uint32_t slot = starts[p.term_id]++;
+                postings_data[slot] = p.doc_id;
             }
+            std::vector<Posting>().swap(thread_indices[t].postings);
         });
     }
     for (auto& th : threads) th.join();
