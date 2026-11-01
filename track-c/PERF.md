@@ -51,3 +51,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 45 | Hardware CRC32 + madvise streaming consistency | run-a4e0d8cd8d01 | 0.0991 | 49.0 | 56.88 |
 | 46 | Flat NameEntry 1-pass counting sort partition | run-dd3909c1d2fc | 0.1006 | 77.2 | 54.66 |
 | 47 | MAP_SHARED pre-warmed host page cache streaming | run-cd844606b6e8 | 0.1022 | 78.2 | 54.53 |
+| 48 | Persistent barrier deduplication on host page cache | run-d4fa4ab912d0 | 0.1054 | 45.7 | 56.68 |

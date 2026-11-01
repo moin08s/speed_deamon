@@ -51,3 +51,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 44 | Direct-mapped CRC32 caching and SIMD method jump | run-4579eedf038f | 0.0830 | 67.1 | 62.37 |
 | 45 | Flat buffer counting sort partition | run-44c8f3edaa35 | 0.0924 | 62.1 | 61.46 |
 | 46 | MAP_SHARED pre-warmed host page cache streaming with in-flight reclamation | run-e4b739d40af9 | 0.0790 | 53.4 | 64.03 |
+| 47 | Verified persistent barrier streaming execution on host page cache | run-66715c2c4892 | 0.0788 | 51.1 | 64.04 |

@@ -40,3 +40,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 33 | Sequential degree placement consistency | run-ab9652a76c34 | 1.0678 | 149.1 | 46.12 |
 | 34 | Degree placement consistency | run-2735d883aa69 | 1.2248 | 149.2 | 44.63 |
 | 35 | MAP_SHARED host page cache graph streaming | run-3bab85e592c8 | 1.0836 | 149.2 | 45.96 |
+| 36 | Restored 6-worker parallel degree CSR loader | run-d1af14c78d0f | 0.8517 | 170.8 | 47.44 |
