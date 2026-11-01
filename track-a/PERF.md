@@ -31,4 +31,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 24 | Two-pass direct scatter test (two passes over 160MB input file incur redundant I/O) | run-8beba04f5e71 | 0.120 | 28 | 58.94 |
 | 25 | Restored single-pass streaming with contiguous lat_pool reduction | run-fc02c9b01c53 | 0.074 | 38 | 66.17 |
 | 26 | In-place parallel endpoint global ID remapping + elimination of remap_eid array lookup in reduction loops | run-31f4a65654a3 | 0.077 | 39 | 65.69 |
-| 27 | Single flat entry buffer per thread + in-memory parallel counting sort + contiguous lat_pool scatter | pending | | | |
+| 27 | Single flat entry buffer per thread + in-memory parallel counting sort + contiguous lat_pool scatter | run-ab2d69133b7c | 0.106 | 59 | 60.42 |
+| 28 | Restored streaming hour-partitioned reduction with in-flight capacity reclamation | pending | | | |

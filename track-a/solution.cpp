@@ -12,16 +12,14 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <intrin.h>
 #else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <malloc.h>
-#endif
-
-#if defined(__x86_64__) || defined(_M_X64)
-#include <immintrin.h>
+#include <x86intrin.h>
 #endif
 
 struct MappedFile {
@@ -54,11 +52,7 @@ struct MappedFile {
         size = st.st_size;
         if (size == 0) return true;
         data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
-        if (data != MAP_FAILED) {
-            madvise((void*)data, size, MADV_WILLNEED);
-            return true;
-        }
-        return false;
+        return data != MAP_FAILED;
 #endif
     }
 
@@ -77,7 +71,6 @@ struct MappedFile {
             fd = -1;
         }
 #endif
-        size = 0;
     }
 
     ~MappedFile() { close(); }
@@ -158,7 +151,6 @@ struct FastStringMap {
             h = (h ^ (unsigned char)s[i]) * 0x100000001b3ULL;
         }
 #endif
-        if (!h) h = 1;
         size_t idx = h & MASK;
         while (entries[idx].hash != 0) {
             if (entries[idx].hash == h && entries[idx].len == len &&
@@ -167,7 +159,7 @@ struct FastStringMap {
             }
             idx = (idx + 1) & MASK;
         }
-        entries[idx].hash = h;
+        entries[idx].hash = h ? h : 1;
         entries[idx].len = (uint32_t)len;
         entries[idx].str = s;
         entries[idx].id = count++;
@@ -175,16 +167,16 @@ struct FastStringMap {
     }
 };
 
-struct RawEntry {
+struct RawRecord {
     uint32_t lat;
-    uint16_t hid_and_err; // bit 15: is_error, bits 0..6: hid (0..71)
-    uint16_t leid;        // local endpoint id (0..2047)
+    uint16_t eid_and_err;
+    uint16_t _pad;
 };
 
 struct ThreadParseData {
     FastStringMap ep_map;
     std::vector<std::string> endpoints;
-    std::vector<RawEntry> entries;
+    std::vector<RawRecord> hour_records[72];
     std::vector<int> remap_eid;
 };
 
@@ -193,8 +185,10 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
     const char* limit = buf + end;
 
     size_t chunk_bytes = end - start;
-    size_t est_records = (chunk_bytes / 65) + 4096;
-    td.entries.reserve(est_records);
+    size_t est_per_hour = (chunk_bytes / 50) / 72 + 64;
+    for (size_t h = 0; h < 72; ++h) {
+        td.hour_records[h].reserve(est_per_hour);
+    }
 
     while (p < limit) {
         if (*p == '\r' || *p == '\n') { p++; continue; }
@@ -230,8 +224,8 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         if (!ep_end) break;
 
         size_t ep_len = ep_end - ep_start;
-        int leid = td.ep_map.get_or_insert(ep_start, ep_len);
-        if (leid >= (int)td.endpoints.size()) {
+        int eid = td.ep_map.get_or_insert(ep_start, ep_len);
+        if (eid >= (int)td.endpoints.size()) {
             td.endpoints.emplace_back(ep_start, ep_len);
         }
 
@@ -240,19 +234,28 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         uint16_t is_err_flag = (status_ptr < limit && *status_ptr == '5') ? 0x8000 : 0;
 
         // Latency
-        const char* lat_ptr = ep_end + 5;
+        const char* lat_ptr = status_ptr + 4;
         uint32_t lat = 0;
         while (lat_ptr < limit && *lat_ptr >= '0' && *lat_ptr <= '9') {
             lat = lat * 10 + (*lat_ptr - '0');
             lat_ptr++;
         }
 
-        td.entries.push_back({lat, (uint16_t)(is_err_flag | hid), (uint16_t)leid});
+        td.hour_records[hid].push_back({lat, (uint16_t)((uint16_t)eid | is_err_flag), 0});
 
+        // Fast newline advance
         if (lat_ptr < limit && *lat_ptr == '\r') lat_ptr++;
         if (lat_ptr < limit && *lat_ptr == '\n') lat_ptr++;
         p = lat_ptr;
     }
+
+#ifndef _WIN32
+    if (end > start) {
+        uintptr_t page_start = (uintptr_t)(buf + start) & ~4095ULL;
+        uintptr_t page_end = ((uintptr_t)(buf + end) + 4095ULL) & ~4095ULL;
+        madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+    }
+#endif
 }
 
 inline char* fast_u32(char* p, uint32_t val) {
@@ -327,13 +330,14 @@ int main(int argc, char** argv) {
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
-    // Single Pass: High-speed sequential ingestion into flat thread entry buffers
     for (size_t i = 0; i < num_threads; ++i) {
         threads.emplace_back(parse_chunk, mf.data, split_points[i], split_points[i+1], std::ref(parse_data[i]));
     }
-    for (auto& t : threads) t.join();
 
-    mf.close(); // Immediately unmap requests.log to drop page cache!
+    for (auto& t : threads) {
+        t.join();
+    }
+    mf.close(); // Immediately unmap requests.log to drop page cache
 
     // Collect global endpoints from all threads
     std::vector<std::string> global_endpoints;
@@ -356,83 +360,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Parallel counting sort in L3 cache across all 12 threads
-    std::vector<std::vector<uint32_t>> thread_group_counts(num_threads, std::vector<uint32_t>(72 * num_eps, 0));
-    std::vector<std::vector<uint32_t>> thread_group_errors(num_threads, std::vector<uint32_t>(72 * num_eps, 0));
-
-    threads.clear();
-    for (size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&, t]() {
-            auto& td = parse_data[t];
-            auto& counts = thread_group_counts[t];
-            auto& errors = thread_group_errors[t];
-            const auto& remap = td.remap_eid;
-            for (const auto& entry : td.entries) {
-                uint32_t hid = entry.hid_and_err & 0x7FFF;
-                uint32_t geid = (uint32_t)remap[entry.leid];
-                uint32_t gid = hid * num_eps + geid;
-                counts[gid]++;
-                if (entry.hid_and_err & 0x8000) errors[gid]++;
-            }
-        });
-    }
-    for (auto& th : threads) th.join();
-
-    // Compute prefix sums across all groups and threads
-    std::vector<uint32_t> group_counts(72 * num_eps, 0);
-    std::vector<uint32_t> group_errors(72 * num_eps, 0);
-    std::vector<uint32_t> base_offsets(72 * num_eps + 1, 0);
-    std::vector<std::vector<uint32_t>> thread_offsets(num_threads, std::vector<uint32_t>(72 * num_eps, 0));
-
-    for (size_t g = 0; g < 72 * num_eps; ++g) {
-        for (size_t t = 0; t < num_threads; ++t) {
-            group_counts[g] += thread_group_counts[t][g];
-            group_errors[g] += thread_group_errors[t][g];
-        }
-    }
-
-    uint32_t running_offset = 0;
-    for (size_t g = 0; g < 72 * num_eps; ++g) {
-        base_offsets[g] = running_offset;
-        uint32_t cur = running_offset;
-        for (size_t t = 0; t < num_threads; ++t) {
-            thread_offsets[t][g] = cur;
-            cur += thread_group_counts[t][g];
-        }
-        running_offset += group_counts[g];
-    }
-    base_offsets[72 * num_eps] = running_offset;
-    uint32_t total_recs = running_offset;
-
-    thread_group_counts.clear();
-    thread_group_counts.shrink_to_fit();
-
-    // Allocate flat lat_pool of size total_recs (12.4 MB)
-    std::vector<uint32_t> lat_pool(total_recs);
-
-    // Scatter latencies directly into contiguous group slots in parallel
-    threads.clear();
-    for (size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&, t]() {
-            auto& td = parse_data[t];
-            auto& offsets = thread_offsets[t];
-            const auto& remap = td.remap_eid;
-            for (const auto& entry : td.entries) {
-                uint32_t hid = entry.hid_and_err & 0x7FFF;
-                uint32_t geid = (uint32_t)remap[entry.leid];
-                uint32_t gid = hid * num_eps + geid;
-                uint32_t slot = offsets[gid]++;
-                lat_pool[slot] = entry.lat;
-            }
-            std::vector<RawEntry>().swap(td.entries); // Free raw entries immediately
-        });
-    }
-    for (auto& th : threads) th.join();
-
-    thread_offsets.clear();
-    thread_offsets.shrink_to_fit();
-
-    // Phase 3: Parallel percentile calculation and output generation
+    // Phase 2: Ultra-Fast Parallel Counting Reduction by Hour
     std::vector<std::string> thread_outputs(num_threads);
     threads.clear();
 
@@ -446,17 +374,64 @@ int main(int argc, char** argv) {
             if (h_start >= h_end) return;
             std::string& out_buf = thread_outputs[t];
             out_buf.reserve((h_end - h_start) * 2000 * 96);
+
+            std::vector<uint32_t> ep_counts(num_eps);
+            std::vector<uint32_t> ep_errors(num_eps);
+            std::vector<uint32_t> ep_offsets(num_eps + 1);
+            std::vector<uint32_t> cur_pos(num_eps + 1);
+            std::vector<uint32_t> lat_pool;
+            lat_pool.reserve(65536);
+
             char line_buf[2048];
 
             for (size_t h = h_start; h < h_end; ++h) {
+                size_t total_recs = 0;
+                for (size_t pt = 0; pt < num_threads; ++pt) {
+                    total_recs += parse_data[pt].hour_records[h].size();
+                }
+                if (total_recs == 0) continue;
+
+                std::fill(ep_counts.begin(), ep_counts.end(), 0);
+                std::fill(ep_errors.begin(), ep_errors.end(), 0);
+
+                for (size_t pt = 0; pt < num_threads; ++pt) {
+                    const auto& recs = parse_data[pt].hour_records[h];
+                    const auto& remap_eid = parse_data[pt].remap_eid;
+                    for (const auto& rec : recs) {
+                        uint32_t gid = remap_eid[rec.eid_and_err & 0x7FFF];
+                        ep_counts[gid]++;
+                        if (rec.eid_and_err & 0x8000) ep_errors[gid]++;
+                    }
+                }
+
+                ep_offsets[0] = 0;
+                for (size_t i = 0; i < num_eps; ++i) {
+                    ep_offsets[i + 1] = ep_offsets[i] + ep_counts[i];
+                }
+                std::copy(ep_offsets.begin(), ep_offsets.end(), cur_pos.begin());
+
+                if (lat_pool.size() < total_recs) {
+                    lat_pool.resize(total_recs);
+                }
+
+                for (size_t pt = 0; pt < num_threads; ++pt) {
+                    const auto& recs = parse_data[pt].hour_records[h];
+                    const auto& remap_eid = parse_data[pt].remap_eid;
+                    for (const auto& rec : recs) {
+                        uint32_t gid = remap_eid[rec.eid_and_err & 0x7FFF];
+                        uint32_t pos = cur_pos[gid]++;
+                        lat_pool[pos] = rec.lat;
+                    }
+                    std::vector<RawRecord>().swap(parse_data[pt].hour_records[h]);
+                }
+
                 const char* hr_str = GLOBAL_HOURS[h];
 
-                for (size_t ge = 0; ge < num_eps; ++ge) {
-                    uint32_t gid = h * num_eps + ge;
-                    uint32_t n = group_counts[gid];
+                for (size_t gid = 0; gid < num_eps; ++gid) {
+                    uint32_t n = ep_counts[gid];
                     if (n == 0) continue;
 
-                    uint32_t st = base_offsets[gid];
+                    uint32_t st = ep_offsets[gid];
                     uint32_t* sub = &lat_pool[st];
 
                     uint32_t p50, p95, p99;
@@ -499,10 +474,10 @@ int main(int argc, char** argv) {
                         }
                     }
 
-                    uint32_t err = group_errors[gid];
+                    uint32_t err = ep_errors[gid];
                     uint64_t ppm = (uint64_t)err * 1000000ULL / n;
 
-                    const std::string& ep_str = global_endpoints[ge];
+                    const std::string& ep_str = global_endpoints[gid];
 
                     char* p = line_buf;
                     std::memcpy(p, hr_str, 20);
