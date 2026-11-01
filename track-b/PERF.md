@@ -38,4 +38,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 31 | Fast balanced scatter execution consistency | run-024b39298f87 | 0.505 | 317 | 51.20 |
 | 32 | Incremental 256KB madvise DONTNEED page cache eviction during Pass 1 doc parsing | run-9650794af4ae | 0.495 | 317 | 51.39 |
 | 33 | Restored clean thread iteration with zero syscall lock contention | run-eb5ae7573a51 | 0.493 | 315.8 | 51.47 |
-| 34 | Fast in-memory scatter consistency | pending | | | |
+| 34 | Fast in-memory scatter consistency | run-5c3bb0bc9b72 | 0.502 | 319.1 | 51.24 |
+| 35 | Zero-mmap streaming pread chunk parser (OS page cache non-RSS docs.txt) | pending | pending | pending | pending |
