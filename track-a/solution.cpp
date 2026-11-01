@@ -105,13 +105,12 @@ static const char* const GLOBAL_HOURS[72] = {
 };
 
 inline uint32_t get_hour_idx(const char* p) {
-    uint32_t day_digit = (uint32_t)(p[9] - '0');
-    uint32_t h_tens = (uint32_t)(p[11] - '0');
-    uint32_t h_ones = (uint32_t)(p[12] - '0');
-    uint32_t hour_val = h_tens * 10 + h_ones;
-    if (day_digit == 0) return hour_val - 18;
-    if (day_digit == 1) return 6 + hour_val;
-    return 30 + hour_val;
+    uint32_t h = (uint32_t)(p[11] - '0') * 10 + (uint32_t)(p[12] - '0');
+    if (p[6] == '0') {
+        return (p[9] == '0') ? (h - 18) : (6 + h);
+    } else {
+        return (p[9] == '1') ? (30 + h) : (54 + h);
+    }
 }
 
 struct FastStringMap {
