@@ -36,3 +36,7 @@ Every step from the reference to your final version, each with the live-board ru
 | 29 | Sub-second bidirectional Dijkstra with packed 8-byte Edge CSR cache efficiency | run-3b2c6486e055 | 0.972 | 266.7 | 44.43 |
 | 30 | Sub-second bidirectional Dijkstra with packed 8-byte Edge CSR cache efficiency | run-ef53b59aa403 | 1.008 | 267.3 | 44.02 |
 | 31 | 128K generation-tagged hash map Dijkstra + 12 worker threads (M=179MB, T=0.796s, +3.74 pts jump) | run-f46a27450686 | 0.796 | 179.1 | 48.17 |
+| 32 | Sequential degree counting test (M=149MB) | run-c856a44c0724 | 1.0345 | 149.1 | 46.46 |
+| 33 | Sequential degree placement consistency | run-ab9652a76c34 | 1.0678 | 149.1 | 46.12 |
+| 34 | Degree placement consistency | run-2735d883aa69 | 1.2248 | 149.2 | 44.63 |
+| 35 | MAP_SHARED host page cache graph streaming | run-3bab85e592c8 | 1.0836 | 149.2 | 45.96 |

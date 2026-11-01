@@ -48,3 +48,6 @@ Every step from the reference to your final version, each with the live-board ru
 | 41 | Hardware CRC32 + single barrier consistency | run-4b70d9df7617 | 0.104 | 49.4 | 56.46 |
 | 42 | Hardware CRC32 + single barrier consistency | run-a88c842e7456 | 0.102 | 49.7 | 56.61 |
 | 44 | Sub-100ms parse (T=0.099s) with incremental 256KB madvise streaming | run-ac49af563afd | 0.099 | 48.0 | 56.95 |
+| 45 | Hardware CRC32 + madvise streaming consistency | run-a4e0d8cd8d01 | 0.0991 | 49.0 | 56.88 |
+| 46 | Flat NameEntry 1-pass counting sort partition | run-dd3909c1d2fc | 0.1006 | 77.2 | 54.66 |
+| 47 | MAP_SHARED pre-warmed host page cache streaming | run-cd844606b6e8 | 0.1022 | 78.2 | 54.53 |

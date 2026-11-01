@@ -47,3 +47,6 @@ Every step from the reference to your final version, each with the live-board ru
 | 40 | High-throughput 1MB buffered streaming scatter (cuts 250k pread syscalls) | run-1490e70b788e | 0.622 | 153.0 | 51.63 |
 | 41 | High-throughput 1MB buffered streaming scatter consistency | run-98adc0c15740 | 0.664 | 153.4 | 50.91 |
 | 42 | High-throughput 1MB buffered streaming scatter (New PB 0.608s) | run-f12cb2777d37 | 0.608 | 152.5 | 51.89 |
+| 43 | Single-pass in-memory direct scatter (New Speed PB 0.493s) | run-acdc2d48cf81 | 0.4931 | 311.8 | 51.26 |
+| 44 | Direct pread streaming scatter test | run-3a4ab9e4fc3c | 0.9245 | 399.6 | 43.15 |
+| 45 | MAP_SHARED host page cache streaming scatter | run-db07fac521a8 | 0.6866 | 150.5 | 51.25 |
