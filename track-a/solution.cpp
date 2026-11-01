@@ -194,11 +194,20 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
     size_t mru_len[2] = {0, 0};
     int mru_eid[2] = {-1, -1};
 
+    uint32_t cur_hid = 0;
+    char last_h0 = 0, last_h1 = 0, last_d0 = 0, last_m0 = 0;
+    auto* cur_hour_vec = &td.hour_records[0];
+
     while (p < limit) {
         if (*p == '\r' || *p == '\n') { p++; continue; }
-        if (limit - p < 35) break;
+        if (limit - p < 45) break;
 
-        uint32_t hid = get_hour_idx(p);
+        // Chronological hour cache (hour only changes 72 times in entire file)
+        if (__builtin_expect(p[11] != last_h0 || p[12] != last_h1 || p[9] != last_d0 || p[6] != last_m0, 0)) {
+            cur_hid = get_hour_idx(p);
+            last_h0 = p[11]; last_h1 = p[12]; last_d0 = p[9]; last_m0 = p[6];
+            cur_hour_vec = &td.hour_records[cur_hid];
+        }
 
         // Fast O(1) HTTP method jump
         const char* ep_start = nullptr;
@@ -224,7 +233,20 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         }
 
         if (ep_start >= limit) break;
-        const char* ep_end = (const char*)std::memchr(ep_start, ' ', limit - ep_start);
+
+        // Vectorized SIMD space search: 1-cycle AVX2 match for paths <= 32 chars
+        const char* ep_end = nullptr;
+        if (__builtin_expect(limit - ep_start >= 32, 1)) {
+            __m256i chunk = _mm256_loadu_si256((const __m256i*)ep_start);
+            uint32_t mask = (uint32_t)_mm256_movemask_epi8(_mm256_cmpeq_epi8(chunk, _mm256_set1_epi8(' ')));
+            if (__builtin_expect(mask != 0, 1)) {
+                ep_end = ep_start + __builtin_ctz(mask);
+            } else {
+                ep_end = (const char*)std::memchr(ep_start + 32, ' ', limit - (ep_start + 32));
+            }
+        } else {
+            ep_end = (const char*)std::memchr(ep_start, ' ', limit - ep_start);
+        }
         if (!ep_end) break;
 
         size_t ep_len = ep_end - ep_start;
@@ -244,21 +266,20 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
 
         // Status
         const char* status_ptr = ep_end + 1;
-        uint16_t is_err_flag = (status_ptr < limit && *status_ptr == '5') ? 0x8000 : 0;
+        uint16_t is_err_flag = (status_ptr[0] == '5') ? 0x8000 : 0;
 
         // Latency
         const char* lat_ptr = status_ptr + 4;
         uint32_t lat = 0;
-        while (lat_ptr < limit && *lat_ptr >= '0' && *lat_ptr <= '9') {
+        while (*lat_ptr >= '0' && *lat_ptr <= '9') {
             lat = lat * 10 + (*lat_ptr - '0');
             lat_ptr++;
         }
 
-        td.hour_records[hid].push_back({lat, (uint16_t)((uint16_t)eid | is_err_flag), 0});
+        cur_hour_vec->push_back({lat, (uint16_t)((uint16_t)eid | is_err_flag), 0});
 
-        // Fast newline advance
-        if (lat_ptr < limit && *lat_ptr == '\r') lat_ptr++;
-        if (lat_ptr < limit && *lat_ptr == '\n') lat_ptr++;
+        if (*lat_ptr == '\r') lat_ptr++;
+        if (*lat_ptr == '\n') lat_ptr++;
         p = lat_ptr;
     }
 

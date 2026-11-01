@@ -33,4 +33,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 26 | Keep docs.txt hot in page cache during phrase queries (MADV_WILLNEED) + defer mf.close() | run-3bee2cc494c2 | 0.637 | 154 | 51.80 |
 | 27 | 12-thread balanced partition scatter with zero-copy slice format | run-d74eee836839 | 0.595 | 154 | 52.55 |
 | 28 | Single-pass document tokenization + flat in-memory posting scatter | run-b89402b07375 | 0.558 | 308 | 50.28 |
-| 29 | L1 32KB Bloom filter (95.7% word skip) + madvise DONTNEED + M_ARENA_MAX=1 + malloc_trim | pending | | | |
+| 29 | L1 32KB Bloom filter (95.7% word skip) + madvise DONTNEED + M_ARENA_MAX=1 + malloc_trim | run-abeddcedc6a7 | 0.551 | 316 | 50.27 |
