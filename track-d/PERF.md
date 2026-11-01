@@ -43,3 +43,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 36 | Restored 6-worker parallel degree CSR loader | run-d1af14c78d0f | 0.8517 | 170.8 | 47.44 |
 | 37 | Sub-780ms parallel degree CSR loader (New PB 48.52 pts) | run-5070bd30a799 | 0.7705 | 171.1 | 48.52 |
 | 38 | Parallel degree CSR loader run consistency | run-9cb8231c5ba5 | 0.7736 | 171.2 | 48.47 |
+| 39 | Sub-765ms parallel degree CSR loader (New PB 48.60 pts) | run-1f47ddd83a41 | 0.7645 | 171.4 | 48.60 |
