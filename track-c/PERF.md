@@ -44,3 +44,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 37 | Hardware CRC32 + single barrier consistency | run-0bb817a66388 | 0.102 | 49.0 | 56.66 |
 | 38 | Hardware CRC32 + single barrier consistency | run-6170f6cd4a66 | 0.112 | 49.2 | 55.66 |
 | 39 | Hardware CRC32 + single barrier consistency | run-c0f87dad0c73 | 0.102 | 49.6 | 56.61 |
+| 40 | Hardware CRC32 + single barrier consistency | run-d24ed829103c | 0.103 | 49.2 | 56.55 |
