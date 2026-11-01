@@ -32,4 +32,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 25 | Open-addressing deduplication test (unbounded probe loop on full table) | run-bffbf6ef22db | timeout | 49 | failure (timeout) |
 | 26 | Fast unescaped quote detection + consecutive hash filter + robust thread-local sort/unique deduplication | run-2b88d63da923 | 0.103 | 49 | 56.71 |
 | 27 | DynamicNameSet per-country open-addressing hash set | run-22bb851fea32 | 0.144 | 72 | 51.16 |
-| 28 | Restored proven consecutive filter with thread-local vector sort and unescaped quote fast-path | pending | | | |
+| 28 | Restored proven consecutive filter with thread-local vector sort and unescaped quote fast-path | run-8713f6ab4b25 | 0.104 | 49 | 56.64 |

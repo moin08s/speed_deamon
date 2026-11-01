@@ -31,3 +31,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 24 | AVX2 SIMD simultaneous char-pair phrase candidate search + zero-allocation TermView queries + 1-term BOOL fast path + doc-list Pass 2 scatter | run-7c85aec550b9 | 0.609 | 149 | 52.59 |
 | 25 | 2-term Boolean direct zero-copy evaluation + difference_slices/union_slices zero-reallocation operations + unified format_postings_direct | run-0d49c97cda04 | 0.638 | 153 | 51.81 |
 | 26 | Keep docs.txt hot in page cache during phrase queries (MADV_WILLNEED) + defer mf.close() | run-3bee2cc494c2 | 0.637 | 154 | 51.80 |
+| 27 | 12-thread balanced partition scatter with zero-copy slice format | run-d74eee836839 | 0.595 | 154 | 52.55 |
+| 28 | Single-pass document tokenization + flat in-memory posting scatter completely eliminating Pass 2 disk re-scan | pending | | | |
