@@ -42,3 +42,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 35 | AVX2 SIMD space delimiter and streaming reduction consistency | run-fabec0aaf02f | 0.076 | 39.1 | 65.73 |
 | 36 | High-throughput streaming parsing consistency | run-0767f077bcda | 0.075 | 38.2 | 65.97 |
 | 37 | High-throughput streaming parsing consistency | run-ce559d577f7f | 0.077 | 39.0 | 65.64 |
+| 38 | High-throughput streaming parsing consistency | run-c22eeff5343f | 0.076 | 38.8 | 65.77 |
+| 39 | Direct-mapped 4096-slot CRC32 endpoint cache (92.6% instant 1-cycle hit rate) | pending | pending | pending | pending |

@@ -29,4 +29,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 22 | Restored balanced frontier size stepping + 8-worker optimal topology + post-load malloc_trim | run-a998d4cba900 | 1.066 | 322.9 | 42.58 |
 | 23 | Balanced frontier size stepping consistency | run-6a611565a9b2 | 1.023 | 323.2 | 43.02 |
 | 24 | Balanced frontier size stepping consistency | run-22ec81ccfbce | 1.031 | 323.5 | 42.93 |
-| 25 | Packed 8-byte Edge CSR array + in-place t_deg prefix sum (zero fwd_starts/bwd_starts memory) + 6 P-core worker topology | pending | pending | pending | pending |
+| 25 | Packed 8-byte Edge CSR array + in-place t_deg prefix sum (zero fwd_starts/bwd_starts memory) + 6 P-core worker topology | run-10eed154c014 | 1.003 | 266.4 | 44.09 |

@@ -41,3 +41,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 34 | Fast in-memory scatter consistency | run-5c3bb0bc9b72 | 0.502 | 319.1 | 51.24 |
 | 35 | Zero-mmap streaming pread chunk parser (OS page cache non-RSS docs.txt) | run-dccb2795a78b | 0.516 | 314.8 | 50.72 |
 | 36 | Fast pread scatter consistency | run-a0e7350f4199 | 0.491 | 314.5 | 51.26 |
+| 37 | Fast pread scatter consistency | run-d1b72b2f687d | 0.530 | 313.6 | 50.45 |
