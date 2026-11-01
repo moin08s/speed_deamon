@@ -241,21 +241,67 @@ void load_graph(const char* path, CSRGraph& g) {
 #endif
 }
 
+struct FastDistMap {
+    static constexpr size_t CAP = 131072;
+    static constexpr size_t MASK = CAP - 1;
+    struct Entry {
+        uint32_t tag = 0;
+        uint32_t node = 0;
+        uint64_t dist = 0;
+    };
+    std::vector<Entry> table;
+    uint32_t cur_tag = 1;
+
+    void init() {
+        table.assign(CAP, Entry{});
+        cur_tag = 1;
+    }
+
+    inline void clear() {
+        cur_tag++;
+        if (__builtin_expect(cur_tag >= 2000000000, 0)) {
+            std::memset(table.data(), 0, CAP * sizeof(Entry));
+            cur_tag = 1;
+        }
+    }
+
+    inline uint64_t get(uint32_t u) const {
+        size_t idx = ((size_t)u * 2654435761ULL) & MASK;
+        uint32_t tag = cur_tag;
+        while (table[idx].tag == tag) {
+            if (table[idx].node == u) return table[idx].dist;
+            idx = (idx + 1) & MASK;
+        }
+        return UINT64_MAX;
+    }
+
+    inline void set(uint32_t u, uint64_t d) {
+        size_t idx = ((size_t)u * 2654435761ULL) & MASK;
+        uint32_t tag = cur_tag;
+        while (table[idx].tag == tag) {
+            if (table[idx].node == u) {
+                table[idx].dist = d;
+                return;
+            }
+            idx = (idx + 1) & MASK;
+        }
+        table[idx].tag = tag;
+        table[idx].node = u;
+        table[idx].dist = d;
+    }
+};
+
 using Element = std::pair<uint64_t, uint32_t>; // (distance, node)
 
 struct WorkerState {
-    std::vector<uint64_t> dist_f;
-    std::vector<uint64_t> dist_b;
-    std::vector<uint32_t> touched_f;
-    std::vector<uint32_t> touched_b;
+    FastDistMap dist_f;
+    FastDistMap dist_b;
     std::vector<Element> hf;
     std::vector<Element> hb;
 
-    void init(size_t n) {
-        dist_f.assign(n, UINT64_MAX);
-        dist_b.assign(n, UINT64_MAX);
-        touched_f.reserve(4096);
-        touched_b.reserve(4096);
+    void init() {
+        dist_f.init();
+        dist_b.init();
         hf.reserve(4096);
         hb.reserve(4096);
     }
@@ -265,11 +311,11 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
     if (s == t) return 0;
     if (s >= g.n || t >= g.n) return -1;
 
-    ws.dist_f[s] = 0;
-    ws.touched_f.push_back(s);
+    ws.dist_f.clear();
+    ws.dist_b.clear();
 
-    ws.dist_b[t] = 0;
-    ws.touched_b.push_back(t);
+    ws.dist_f.set(s, 0);
+    ws.dist_b.set(t, 0);
 
     ws.hf.clear();
     ws.hb.clear();
@@ -289,10 +335,11 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             auto [d, u] = ws.hf.back();
             ws.hf.pop_back();
 
-            if (d > ws.dist_f[u] || d >= best) continue;
+            if (d > ws.dist_f.get(u) || d >= best) continue;
 
-            if (ws.dist_b[u] != UINT64_MAX) {
-                uint64_t cand = d + ws.dist_b[u];
+            uint64_t db = ws.dist_b.get(u);
+            if (db != UINT64_MAX) {
+                uint64_t cand = d + db;
                 if (cand < best) best = cand;
             }
 
@@ -303,21 +350,14 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
                 uint64_t nd = d + edge.w;
                 if (nd < best) {
                     uint32_t v = edge.dst;
-                    if (ws.dist_f[v] == UINT64_MAX) {
-                        ws.touched_f.push_back(v);
-                        ws.dist_f[v] = nd;
+                    uint64_t cur_df = ws.dist_f.get(v);
+                    if (nd < cur_df) {
+                        ws.dist_f.set(v, nd);
                         ws.hf.push_back({nd, v});
                         std::push_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
-                        if (ws.dist_b[v] != UINT64_MAX) {
-                            uint64_t cand = nd + ws.dist_b[v];
-                            if (cand < best) best = cand;
-                        }
-                    } else if (nd < ws.dist_f[v]) {
-                        ws.dist_f[v] = nd;
-                        ws.hf.push_back({nd, v});
-                        std::push_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
-                        if (ws.dist_b[v] != UINT64_MAX) {
-                            uint64_t cand = nd + ws.dist_b[v];
+                        uint64_t db_v = ws.dist_b.get(v);
+                        if (db_v != UINT64_MAX) {
+                            uint64_t cand = nd + db_v;
                             if (cand < best) best = cand;
                         }
                     }
@@ -328,10 +368,11 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             auto [d, u] = ws.hb.back();
             ws.hb.pop_back();
 
-            if (d > ws.dist_b[u] || d >= best) continue;
+            if (d > ws.dist_b.get(u) || d >= best) continue;
 
-            if (ws.dist_f[u] != UINT64_MAX) {
-                uint64_t cand = d + ws.dist_f[u];
+            uint64_t df = ws.dist_f.get(u);
+            if (df != UINT64_MAX) {
+                uint64_t cand = d + df;
                 if (cand < best) best = cand;
             }
 
@@ -342,21 +383,14 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
                 uint64_t nd = d + edge.w;
                 if (nd < best) {
                     uint32_t v = edge.dst;
-                    if (ws.dist_b[v] == UINT64_MAX) {
-                        ws.touched_b.push_back(v);
-                        ws.dist_b[v] = nd;
+                    uint64_t cur_db = ws.dist_b.get(v);
+                    if (nd < cur_db) {
+                        ws.dist_b.set(v, nd);
                         ws.hb.push_back({nd, v});
                         std::push_heap(ws.hb.begin(), ws.hb.end(), std::greater<Element>());
-                        if (ws.dist_f[v] != UINT64_MAX) {
-                            uint64_t cand = nd + ws.dist_f[v];
-                            if (cand < best) best = cand;
-                        }
-                    } else if (nd < ws.dist_b[v]) {
-                        ws.dist_b[v] = nd;
-                        ws.hb.push_back({nd, v});
-                        std::push_heap(ws.hb.begin(), ws.hb.end(), std::greater<Element>());
-                        if (ws.dist_f[v] != UINT64_MAX) {
-                            uint64_t cand = nd + ws.dist_f[v];
+                        uint64_t df_v = ws.dist_f.get(v);
+                        if (df_v != UINT64_MAX) {
+                            uint64_t cand = nd + df_v;
                             if (cand < best) best = cand;
                         }
                     }
@@ -364,12 +398,6 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             }
         }
     }
-
-    // Reset only touched nodes to UINT64_MAX for next query
-    for (uint32_t v : ws.touched_f) ws.dist_f[v] = UINT64_MAX;
-    for (uint32_t v : ws.touched_b) ws.dist_b[v] = UINT64_MAX;
-    ws.touched_f.clear();
-    ws.touched_b.clear();
 
     return (best == UINT64_MAX) ? -1 : (int64_t)best;
 }
@@ -406,10 +434,10 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 6;
+    const size_t num_threads = 12;
     std::vector<WorkerState> worker_states(num_threads);
     for (size_t t = 0; t < num_threads; ++t) {
-        worker_states[t].init(g.n);
+        worker_states[t].init();
     }
 
     std::vector<std::string> thread_outputs(num_threads);

@@ -473,6 +473,9 @@ int main(int argc, char** argv) {
 
                 const char* p = mf.data + start;
                 const char* limit = mf.data + end;
+#ifndef _WIN32
+                const char* last_advise = p;
+#endif
 
                 if (t == 0) {
                     if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
@@ -510,7 +513,28 @@ int main(int argc, char** argv) {
                     cs.sum_name_len += name_len;
                     cs.sum_note_len += note_len;
                     cs.name_hashes.push_back(name_hash);
+
+#ifndef _WIN32
+                    if (__builtin_expect((size_t)(p - last_advise) >= 262144, 0)) {
+                        uintptr_t adv_start = (uintptr_t)last_advise & ~4095ULL;
+                        uintptr_t adv_end = (uintptr_t)p & ~4095ULL;
+                        if (adv_end > adv_start) {
+                            madvise((void*)adv_start, adv_end - adv_start, MADV_DONTNEED);
+                        }
+                        last_advise = p;
+                    }
+#endif
                 }
+
+#ifndef _WIN32
+                if (p > last_advise) {
+                    uintptr_t adv_start = (uintptr_t)last_advise & ~4095ULL;
+                    uintptr_t adv_end = ((uintptr_t)p + 4095ULL) & ~4095ULL;
+                    if (adv_end > adv_start) {
+                        madvise((void*)adv_start, adv_end - adv_start, MADV_DONTNEED);
+                    }
+                }
+#endif
 
                 for (auto& cs : stats) {
                     if (!cs.name_hashes.empty()) {
@@ -518,6 +542,11 @@ int main(int argc, char** argv) {
                         cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
                     }
                 }
+            }
+
+            // Thread 0 unmaps records.csv to drop RSS before reduction phase
+            if (t == 0) {
+                mf.close();
             }
 
             // High-speed lock-free spin barrier

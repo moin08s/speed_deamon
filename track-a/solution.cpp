@@ -23,13 +23,15 @@
 #include <x86intrin.h>
 #endif
 
-struct RawFile {
+struct MappedFile {
+    const char* data = nullptr;
+    size_t size = 0;
 #ifdef _WIN32
     HANDLE hFile = INVALID_HANDLE_VALUE;
+    HANDLE hMap = NULL;
 #else
     int fd = -1;
 #endif
-    size_t size = 0;
 
     bool open(const char* path) {
 #ifdef _WIN32
@@ -38,41 +40,41 @@ struct RawFile {
         LARGE_INTEGER li;
         GetFileSizeEx(hFile, &li);
         size = li.QuadPart;
-        return true;
+        if (size == 0) return true;
+        hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (!hMap) { CloseHandle(hFile); return false; }
+        data = (const char*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, size);
+        return data != nullptr;
 #else
         fd = ::open(path, O_RDONLY);
         if (fd < 0) return false;
         struct stat st;
-        if (fstat(fd, &st) < 0) { ::close(fd); fd = -1; return false; }
+        if (fstat(fd, &st) < 0) { ::close(fd); return false; }
         size = st.st_size;
-        return true;
-#endif
-    }
-
-    inline ssize_t pread_bytes(void* buf, size_t count, uint64_t offset) const {
-#ifdef _WIN32
-        OVERLAPPED ov;
-        std::memset(&ov, 0, sizeof(ov));
-        ov.Offset = (DWORD)(offset & 0xFFFFFFFF);
-        ov.OffsetHigh = (DWORD)(offset >> 32);
-        DWORD bytesRead = 0;
-        if (!ReadFile(hFile, buf, (DWORD)count, &bytesRead, &ov)) return -1;
-        return (ssize_t)bytesRead;
-#else
-        return ::pread(fd, buf, count, (off_t)offset);
+        if (size == 0) return true;
+        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+        return data != MAP_FAILED;
 #endif
     }
 
     void close() {
 #ifdef _WIN32
+        if (data) { UnmapViewOfFile(data); data = nullptr; }
+        if (hMap) { CloseHandle(hMap); hMap = NULL; }
         if (hFile != INVALID_HANDLE_VALUE) { CloseHandle(hFile); hFile = INVALID_HANDLE_VALUE; }
 #else
-        if (fd >= 0) { ::close(fd); fd = -1; }
+        if (data && data != MAP_FAILED) {
+            munmap((void*)data, size);
+            data = nullptr;
+        }
+        if (fd >= 0) {
+            ::close(fd);
+            fd = -1;
+        }
 #endif
-        size = 0;
     }
 
-    ~RawFile() { close(); }
+    ~MappedFile() { close(); }
 };
 
 static const char* const GLOBAL_HOURS[72] = {
@@ -205,10 +207,10 @@ int main(int argc, char** argv) {
     std::string out_dir = (argc > 2) ? argv[2] : "/out";
 
     std::string input_path = data_dir + "/requests.log";
-    RawFile rf;
-    if (!rf.open(input_path.c_str())) return 1;
+    MappedFile mf;
+    if (!mf.open(input_path.c_str())) return 1;
 
-    if (rf.size == 0) {
+    if (mf.size == 0) {
         std::string out_path = out_dir + "/summary.txt";
         std::ofstream ofs(out_path, std::ios::binary);
         return 0;
@@ -217,20 +219,13 @@ int main(int argc, char** argv) {
     const size_t num_threads = 12;
     std::vector<size_t> split_points(num_threads + 1, 0);
     split_points[0] = 0;
-    split_points[num_threads] = rf.size;
+    split_points[num_threads] = mf.size;
 
     for (size_t i = 1; i < num_threads; ++i) {
-        size_t target = i * (rf.size / num_threads);
-        char probe[4096];
-        size_t to_probe = std::min((size_t)4096, rf.size - target);
-        ssize_t n = rf.pread_bytes(probe, to_probe, target);
-        if (n > 0) {
-            const char* nl = (const char*)std::memchr(probe, '\n', n);
-            if (nl) split_points[i] = target + (nl - probe) + 1;
-            else split_points[i] = rf.size;
-        } else {
-            split_points[i] = rf.size;
-        }
+        size_t target = i * (mf.size / num_threads);
+        const char* nl = (const char*)std::memchr(mf.data + target, '\n', mf.size - target);
+        if (nl) split_points[i] = (nl - mf.data) + 1;
+        else split_points[i] = mf.size;
     }
 
     std::barrier sync_point(num_threads);
@@ -252,166 +247,150 @@ int main(int argc, char** argv) {
                 uint64_t hash = 0;
                 uint32_t len = 0;
                 int id = -1;
-                char str[128];
+                const char* str = nullptr;
             } ep_cache[4096];
-            std::memset(ep_cache, 0, sizeof(ep_cache));
 
+            const char* buf = mf.data;
             size_t start = split_points[t];
             size_t end = split_points[t + 1];
-
-            static constexpr size_t BUF_CAP = 524288; // 512 KB streaming buffer
-            std::vector<char> io_buf(BUF_CAP + 65536);
-            size_t cur_file_pos = start;
-            size_t leftover = 0;
+            const char* p = buf + start;
+            const char* limit = buf + end;
+#ifndef _WIN32
+            const char* last_advise = p;
+#endif
 
             uint32_t cur_hid = 0;
             char last_h0 = 0, last_h1 = 0, last_d0 = 0, last_m0 = 0;
             auto* cur_hour_vec = &td.hour_records[0];
 
-            while (cur_file_pos < end || leftover > 0) {
-                if (cur_file_pos < end) {
-                    size_t read_bytes = std::min(BUF_CAP, end - cur_file_pos);
-                    ssize_t n = rf.pread_bytes(io_buf.data() + leftover, read_bytes, cur_file_pos);
-                    if (n <= 0 && leftover == 0) break;
-                    if (n > 0) {
-                        cur_file_pos += n;
-                        leftover += n;
-                    }
+            while (p < limit) {
+                if (*p == '\r' || *p == '\n') { p++; continue; }
+                if (limit - p < 45) break;
+
+                // Chronological hour cache
+                if (__builtin_expect(p[11] != last_h0 || p[12] != last_h1 || p[9] != last_d0 || p[6] != last_m0, 0)) {
+                    cur_hid = get_hour_idx(p);
+                    last_h0 = p[11]; last_h1 = p[12]; last_d0 = p[9]; last_m0 = p[6];
+                    cur_hour_vec = &td.hour_records[cur_hid];
                 }
 
-                const char* buf_start = io_buf.data();
-                const char* buf_limit = io_buf.data() + leftover;
-                const char* p = buf_start;
-
-                const char* parse_limit = buf_limit;
-                if (cur_file_pos < end) {
-                    const char* last_nl = nullptr;
-                    for (const char* q = buf_limit - 1; q >= p; --q) {
-                        if (*q == '\n') { last_nl = q; break; }
-                    }
-                    if (last_nl) parse_limit = last_nl + 1;
-                    else break;
-                }
-
-                while (p < parse_limit) {
-                    if (*p == '\r' || *p == '\n') { p++; continue; }
-                    if (parse_limit - p < 45) break;
-
-                    // Chronological hour cache
-                    if (__builtin_expect(p[11] != last_h0 || p[12] != last_h1 || p[9] != last_d0 || p[6] != last_m0, 0)) {
-                        cur_hid = get_hour_idx(p);
-                        last_h0 = p[11]; last_h1 = p[12]; last_d0 = p[9]; last_m0 = p[6];
-                        cur_hour_vec = &td.hour_records[cur_hid];
-                    }
-
-                    // Fast O(1) HTTP method jump
-                    const char* ep_start = nullptr;
-                    char m0 = p[28];
-                    if (m0 == 'G') ep_start = p + 32;
-                    else if (m0 == 'P') {
-                        char m1 = p[29];
-                        if (m1 == 'O') ep_start = p + 33;      // POST
-                        else if (m1 == 'U') ep_start = p + 32; // PUT
-                        else if (m1 == 'A') ep_start = p + 34; // PATCH
-                        else {
-                            const char* s = p + 28;
-                            while (s < parse_limit && *s != ' ') s++;
-                            ep_start = s + 1;
-                        }
-                    } else if (m0 == 'D') ep_start = p + 35;   // DELETE
-                    else if (m0 == 'H') ep_start = p + 33;     // HEAD
-                    else if (m0 == 'O') ep_start = p + 36;     // OPTIONS
+                // Fast O(1) HTTP method jump
+                const char* ep_start = nullptr;
+                char m0 = p[28];
+                if (m0 == 'G') ep_start = p + 32;
+                else if (m0 == 'P') {
+                    char m1 = p[29];
+                    if (m1 == 'O') ep_start = p + 33;      // POST
+                    else if (m1 == 'U') ep_start = p + 32; // PUT
+                    else if (m1 == 'A') ep_start = p + 34; // PATCH
                     else {
                         const char* s = p + 28;
-                        while (s < parse_limit && *s != ' ') s++;
+                        while (s < limit && *s != ' ') s++;
                         ep_start = s + 1;
                     }
-
-                    if (ep_start >= parse_limit) break;
-
-                    // Vectorized SIMD space search: 1-cycle AVX2 match for paths <= 32 chars
-                    const char* ep_end = nullptr;
-                    if (__builtin_expect(parse_limit - ep_start >= 32, 1)) {
-                        __m256i chunk = _mm256_loadu_si256((const __m256i*)ep_start);
-                        uint32_t mask = (uint32_t)_mm256_movemask_epi8(_mm256_cmpeq_epi8(chunk, _mm256_set1_epi8(' ')));
-                        if (__builtin_expect(mask != 0, 1)) {
-                            ep_end = ep_start + __builtin_ctz(mask);
-                        } else {
-                            ep_end = (const char*)std::memchr(ep_start + 32, ' ', parse_limit - (ep_start + 32));
-                        }
-                    } else {
-                        ep_end = (const char*)std::memchr(ep_start, ' ', parse_limit - ep_start);
-                    }
-                    if (!ep_end) break;
-
-                    size_t ep_len = ep_end - ep_start;
-                    uint64_t h = 0xcbf29ce484222325ULL;
-#if defined(__x86_64__) || defined(_M_X64)
-                    size_t rem = ep_len;
-                    const char* ptr = ep_start;
-                    while (rem >= 8) {
-                        uint64_t v; std::memcpy(&v, ptr, 8);
-                        h = _mm_crc32_u64(h, v);
-                        ptr += 8; rem -= 8;
-                    }
-                    while (rem > 0) {
-                        h = _mm_crc32_u8((uint32_t)h, (uint8_t)*ptr++);
-                        rem--;
-                    }
-#else
-                    for (size_t i = 0; i < ep_len; ++i) {
-                        h = (h ^ (unsigned char)ep_start[i]) * 0x100000001b3ULL;
-                    }
-#endif
-                    size_t c_idx = h & 4095;
-                    int eid = -1;
-                    if (ep_cache[c_idx].hash == h && ep_cache[c_idx].len == ep_len && std::memcmp(ep_cache[c_idx].str, ep_start, ep_len) == 0) {
-                        eid = ep_cache[c_idx].id;
-                    } else {
-                        eid = td.ep_map.get_or_insert_with_hash(ep_start, ep_len, h);
-                        if (eid >= (int)td.endpoints.size()) {
-                            td.endpoints.emplace_back(ep_start, ep_len);
-                        }
-                        ep_cache[c_idx].hash = h;
-                        ep_cache[c_idx].len = (uint32_t)ep_len;
-                        ep_cache[c_idx].id = eid;
-                        if (ep_len < sizeof(ep_cache[c_idx].str)) {
-                            std::memcpy(ep_cache[c_idx].str, ep_start, ep_len);
-                        }
-                    }
-
-                    // Status
-                    const char* status_ptr = ep_end + 1;
-                    uint16_t is_err_flag = (status_ptr[0] == '5') ? 0x8000 : 0;
-
-                    // Latency
-                    const char* lat_ptr = status_ptr + 4;
-                    uint32_t lat = 0;
-                    while (lat_ptr < parse_limit && *lat_ptr >= '0' && *lat_ptr <= '9') {
-                        lat = lat * 10 + (*lat_ptr - '0');
-                        lat_ptr++;
-                    }
-
-                    cur_hour_vec->push_back({lat, (uint16_t)((uint16_t)eid | is_err_flag), 0});
-
-                    if (lat_ptr < parse_limit && *lat_ptr == '\r') lat_ptr++;
-                    if (lat_ptr < parse_limit && *lat_ptr == '\n') lat_ptr++;
-                    p = lat_ptr;
+                } else if (m0 == 'D') ep_start = p + 35;   // DELETE
+                else if (m0 == 'H') ep_start = p + 33;     // HEAD
+                else if (m0 == 'O') ep_start = p + 36;     // OPTIONS
+                else {
+                    const char* s = p + 28;
+                    while (s < limit && *s != ' ') s++;
+                    ep_start = s + 1;
                 }
 
-                size_t consumed = p - buf_start;
-                leftover -= consumed;
-                if (leftover > 0 && consumed > 0) {
-                    std::memmove(io_buf.data(), buf_start + consumed, leftover);
+                if (ep_start >= limit) break;
+
+                // Vectorized SIMD space search: 1-cycle AVX2 match for paths <= 32 chars
+                const char* ep_end = nullptr;
+                if (__builtin_expect(limit - ep_start >= 32, 1)) {
+                    __m256i chunk = _mm256_loadu_si256((const __m256i*)ep_start);
+                    uint32_t mask = (uint32_t)_mm256_movemask_epi8(_mm256_cmpeq_epi8(chunk, _mm256_set1_epi8(' ')));
+                    if (__builtin_expect(mask != 0, 1)) {
+                        ep_end = ep_start + __builtin_ctz(mask);
+                    } else {
+                        ep_end = (const char*)std::memchr(ep_start + 32, ' ', limit - (ep_start + 32));
+                    }
+                } else {
+                    ep_end = (const char*)std::memchr(ep_start, ' ', limit - ep_start);
+                }
+                if (!ep_end) break;
+
+                size_t ep_len = ep_end - ep_start;
+                uint64_t h = 0xcbf29ce484222325ULL;
+#if defined(__x86_64__) || defined(_M_X64)
+                size_t rem = ep_len;
+                const char* ptr = ep_start;
+                while (rem >= 8) {
+                    uint64_t v; std::memcpy(&v, ptr, 8);
+                    h = _mm_crc32_u64(h, v);
+                    ptr += 8; rem -= 8;
+                }
+                while (rem > 0) {
+                    h = _mm_crc32_u8((uint32_t)h, (uint8_t)*ptr++);
+                    rem--;
+                }
+#else
+                for (size_t i = 0; i < ep_len; ++i) {
+                    h = (h ^ (unsigned char)ep_start[i]) * 0x100000001b3ULL;
+                }
+#endif
+                size_t c_idx = h & 4095;
+                int eid = -1;
+                if (ep_cache[c_idx].hash == h && ep_cache[c_idx].len == ep_len && std::memcmp(ep_cache[c_idx].str, ep_start, ep_len) == 0) {
+                    eid = ep_cache[c_idx].id;
+                } else {
+                    eid = td.ep_map.get_or_insert_with_hash(ep_start, ep_len, h);
+                    if (eid >= (int)td.endpoints.size()) {
+                        td.endpoints.emplace_back(ep_start, ep_len);
+                    }
+                    ep_cache[c_idx] = {h, (uint32_t)ep_len, eid, ep_start};
+                }
+
+                // Status
+                const char* status_ptr = ep_end + 1;
+                uint16_t is_err_flag = (status_ptr[0] == '5') ? 0x8000 : 0;
+
+                // Latency
+                const char* lat_ptr = status_ptr + 4;
+                uint32_t lat = 0;
+                while (*lat_ptr >= '0' && *lat_ptr <= '9') {
+                    lat = lat * 10 + (*lat_ptr - '0');
+                    lat_ptr++;
+                }
+
+                cur_hour_vec->push_back({lat, (uint16_t)((uint16_t)eid | is_err_flag), 0});
+
+                if (*lat_ptr == '\r') lat_ptr++;
+                if (*lat_ptr == '\n') lat_ptr++;
+                p = lat_ptr;
+
+#ifndef _WIN32
+                if (__builtin_expect((size_t)(p - last_advise) >= 262144, 0)) {
+                    uintptr_t adv_start = (uintptr_t)last_advise & ~4095ULL;
+                    uintptr_t adv_end = (uintptr_t)p & ~4095ULL;
+                    if (adv_end > adv_start) {
+                        madvise((void*)adv_start, adv_end - adv_start, MADV_DONTNEED);
+                    }
+                    last_advise = p;
+                }
+#endif
+            }
+
+#ifndef _WIN32
+            if (p > last_advise) {
+                uintptr_t adv_start = (uintptr_t)last_advise & ~4095ULL;
+                uintptr_t adv_end = ((uintptr_t)p + 4095ULL) & ~4095ULL;
+                if (adv_end > adv_start) {
+                    madvise((void*)adv_start, adv_end - adv_start, MADV_DONTNEED);
                 }
             }
+#endif
 
             // Barrier 1: Wait for all threads to finish Phase 1 parse
             sync_point.arrive_and_wait();
 
             // Thread 0 consolidates global endpoints and precomputes remap tables
             if (t == 0) {
-                rf.close(); // Close raw file handle immediately
+                mf.close(); // Immediately unmap file to drop page cache!
                 for (size_t i = 0; i < num_threads; ++i) {
                     for (const auto& ep : parse_data[i].endpoints) {
                         global_endpoints.push_back(ep);
@@ -441,8 +420,7 @@ int main(int argc, char** argv) {
             size_t h_end = std::min((size_t)72, h_start + hours_per_thread);
 
             if (h_start < h_end) {
-                // Pre-allocate direct output buffer: 800 KB per thread
-                td.output_buf.resize(800000);
+                td.output_buf.resize(600000);
                 char* out_ptr = td.output_buf.data();
 
                 std::vector<uint32_t> ep_counts(num_eps);
