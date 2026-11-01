@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <atomic>
+#include <mutex>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -91,33 +92,52 @@ inline uint32_t get_hour_idx(const char* p) {
     return (p[9] == '1') ? (30 + h) : (54 + h);
 }
 
-struct FastStringMap {
+struct AtomicEndpointMap {
     static constexpr size_t CAPACITY = 4096;
     static constexpr size_t MASK = CAPACITY - 1;
-    struct Entry { uint64_t hash = 0; uint32_t len = 0; int id = -1; };
+    struct Entry {
+        std::atomic<uint64_t> hash{0};
+        uint32_t len{0};
+        const char* str{nullptr};
+        int id{-1};
+    };
     Entry entries[CAPACITY];
-    int count = 0;
-    FastStringMap() { std::memset(entries, 0, sizeof(entries)); }
-    inline int get_or_insert(const char* s, size_t len, uint64_t h) {
+    std::atomic<int> count{0};
+    std::string_view id_to_ep[2500];
+    std::mutex insert_mutex;
+
+    int get_or_insert(const char* s, size_t len, uint64_t h) {
+        if (!h) h = 1;
         size_t idx = h & MASK;
-        while (entries[idx].hash != 0) {
-            if (entries[idx].hash == h && entries[idx].len == len) return entries[idx].id;
+        while (true) {
+            uint64_t eh = entries[idx].hash.load(std::memory_order_relaxed);
+            if (eh == 0) {
+                std::lock_guard<std::mutex> lock(insert_mutex);
+                eh = entries[idx].hash.load(std::memory_order_relaxed);
+                if (eh == 0) {
+                    int new_id = count.fetch_add(1, std::memory_order_relaxed);
+                    entries[idx].len = (uint32_t)len;
+                    entries[idx].str = s;
+                    entries[idx].id = new_id;
+                    id_to_ep[new_id] = std::string_view(s, len);
+                    entries[idx].hash.store(h, std::memory_order_release);
+                    return new_id;
+                }
+            }
+            if (eh == h && entries[idx].len == len) {
+                return entries[idx].id;
+            }
             idx = (idx + 1) & MASK;
         }
-        entries[idx].hash = h ? h : 1;
-        entries[idx].len = (uint32_t)len;
-        entries[idx].id = count++;
-        return entries[idx].id;
     }
 };
+
+static AtomicEndpointMap GLOBAL_EP_MAP;
 
 struct RawRecord { uint32_t lat; uint16_t eid_and_err; uint16_t _pad; };
 
 struct ThreadParseData {
-    FastStringMap ep_map;
-    std::vector<std::string_view> endpoints;
     std::vector<RawRecord> hour_records[72];
-    std::vector<int> remap_eid;
 };
 
 void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td) {
@@ -171,8 +191,7 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         while (rem >= 8) { uint64_t v; std::memcpy(&v, ptr, 8); h = _mm_crc32_u64(h, v); ptr += 8; rem -= 8; }
         while (rem--) h = _mm_crc32_u8((uint32_t)h, (uint8_t)*ptr++);
 
-        int eid = td.ep_map.get_or_insert(ep_start, ep_len, h);
-        if (eid >= (int)td.endpoints.size()) td.endpoints.emplace_back(ep_start, ep_len);
+        int eid = GLOBAL_EP_MAP.get_or_insert(ep_start, ep_len, h);
 
         const char* status_ptr = ep_end + 1;
         uint16_t is_err = (status_ptr < limit && *status_ptr == '5') ? 0x8000 : 0;
@@ -249,33 +268,31 @@ int main(int argc, char** argv) {
     }
     for (auto& th : threads) th.join();
 
-    std::vector<std::string_view> raw_endpoints;
-    raw_endpoints.reserve(2500);
-    for (size_t i = 0; i < num_threads; ++i) {
-        for (const auto& ep : parse_data[i].endpoints) raw_endpoints.push_back(ep);
-    }
-    std::sort(raw_endpoints.begin(), raw_endpoints.end());
-    raw_endpoints.erase(std::unique(raw_endpoints.begin(), raw_endpoints.end()), raw_endpoints.end());
+    int num_eps = GLOBAL_EP_MAP.count.load();
+    std::vector<int> sorted_order(num_eps);
+    for (int i = 0; i < num_eps; ++i) sorted_order[i] = i;
 
-    size_t num_eps = raw_endpoints.size();
+    std::sort(sorted_order.begin(), sorted_order.end(), [&](int a, int b) {
+        return GLOBAL_EP_MAP.id_to_ep[a] < GLOBAL_EP_MAP.id_to_ep[b];
+    });
+
+    std::vector<uint16_t> old_to_new(num_eps);
+    for (int new_id = 0; new_id < num_eps; ++new_id) {
+        old_to_new[sorted_order[new_id]] = (uint16_t)new_id;
+    }
+
     size_t pool_bytes = 0;
-    for (auto ep : raw_endpoints) pool_bytes += ep.size();
+    for (int i = 0; i < num_eps; ++i) pool_bytes += GLOBAL_EP_MAP.id_to_ep[i].size();
 
     std::string ep_pool;
     ep_pool.reserve(pool_bytes + 16);
     std::vector<std::string_view> global_endpoints(num_eps);
-    for (size_t i = 0; i < num_eps; ++i) {
+    for (int new_id = 0; new_id < num_eps; ++new_id) {
+        int old_id = sorted_order[new_id];
+        std::string_view sv = GLOBAL_EP_MAP.id_to_ep[old_id];
         size_t off = ep_pool.size();
-        ep_pool.append(raw_endpoints[i].data(), raw_endpoints[i].size());
-        global_endpoints[i] = std::string_view(ep_pool.data() + off, raw_endpoints[i].size());
-    }
-
-    for (size_t i = 0; i < num_threads; ++i) {
-        auto& ptd = parse_data[i];
-        ptd.remap_eid.resize(ptd.endpoints.size());
-        for (size_t le = 0; le < ptd.endpoints.size(); ++le) {
-            ptd.remap_eid[le] = (int)(std::lower_bound(global_endpoints.begin(), global_endpoints.end(), ptd.endpoints[le]) - global_endpoints.begin());
-        }
+        ep_pool.append(sv.data(), sv.size());
+        global_endpoints[new_id] = std::string_view(ep_pool.data() + off, sv.size());
     }
 
     mf.close();
@@ -304,25 +321,23 @@ int main(int argc, char** argv) {
 
                 for (size_t pt = 0; pt < num_threads; ++pt) {
                     const auto& recs = parse_data[pt].hour_records[h];
-                    const auto& remap = parse_data[pt].remap_eid;
                     for (const auto& r : recs) {
-                        uint32_t gid = remap[r.eid_and_err & 0x7FFF];
+                        uint32_t gid = old_to_new[r.eid_and_err & 0x7FFF];
                         ep_counts[gid]++;
                         if (r.eid_and_err & 0x8000) ep_errors[gid]++;
                     }
                 }
 
                 ep_offsets[0] = 0;
-                for (size_t i = 0; i < num_eps; ++i) ep_offsets[i + 1] = ep_offsets[i] + ep_counts[i];
+                for (int i = 0; i < num_eps; ++i) ep_offsets[i + 1] = ep_offsets[i] + ep_counts[i];
                 std::copy(ep_offsets.begin(), ep_offsets.end(), cur_pos.begin());
 
                 if (lat_pool.size() < total_recs) lat_pool.resize(total_recs);
 
                 for (size_t pt = 0; pt < num_threads; ++pt) {
                     const auto& recs = parse_data[pt].hour_records[h];
-                    const auto& remap = parse_data[pt].remap_eid;
                     for (const auto& r : recs) {
-                        uint32_t gid = remap[r.eid_and_err & 0x7FFF];
+                        uint32_t gid = old_to_new[r.eid_and_err & 0x7FFF];
                         lat_pool[cur_pos[gid]++] = r.lat;
                     }
                     std::vector<RawRecord>().swap(parse_data[pt].hour_records[h]);
@@ -332,7 +347,7 @@ int main(int argc, char** argv) {
                 out_buf.reserve(num_eps * 48);
 
                 const char* hr_str = GLOBAL_HOURS[h];
-                for (size_t gid = 0; gid < num_eps; ++gid) {
+                for (int gid = 0; gid < num_eps; ++gid) {
                     uint32_t n = ep_counts[gid];
                     if (!n) continue;
                     uint32_t* sub = &lat_pool[ep_offsets[gid]];

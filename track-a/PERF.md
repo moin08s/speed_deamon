@@ -56,4 +56,6 @@ Every step from the reference to your final version, each with the live-board ru
 | 49 | AVX2 space delimiter + 1-cycle hour cache + compact 352-line implementation | run-76074644623d | 0.0732 | 43.1 | 66.07 |
 | 50 | Zero-allocation string_view endpoint indexing + 12-thread parallel remap_eid | run-68650f6ed45c | 0.0635 | 39.3 | 67.98 |
 | 51 | 60ms sub-40MB persistent barrier streaming execution | run-02d2ad89ce11 | 0.0600 | 39.6 | 68.54 |
-| 52 | Early input file unmap prior to Phase 2 + contiguous endpoint pool (New PB 68.71 pts) | run-16a764b7f31d | 0.0601 | 37.7 | 68.71 |
+| 52 | Early input file unmap prior to Phase 2 + contiguous endpoint pool | run-16a764b7f31d | 0.0601 | 37.7 | 68.71 |
+| 53 | Radix-100 table + work-stealing hour aggregation (New PB 68.74 pts) | run-8271d54302a8 | 0.0594 | 37.4 | 68.74 |
+| 54 | Lock-free shared AtomicEndpointMap + old_to_new direct indexing | pending | - | - | - |
