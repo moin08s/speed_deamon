@@ -593,9 +593,15 @@ int main(int argc, char** argv) {
         uint32_t len;
     };
 
+    struct PostingEntry {
+        uint32_t term_id;
+        uint32_t doc_id;
+    };
+
     struct ThreadIndex {
         std::vector<DocInfo> docs;
         std::vector<uint32_t> term_counts;
+        std::vector<PostingEntry> entries;
     };
 
     std::vector<ThreadIndex> thread_indices(num_threads);
@@ -610,6 +616,7 @@ int main(int argc, char** argv) {
             auto& t_idx = thread_indices[t];
             t_idx.term_counts.assign(num_terms, 0);
             t_idx.docs.reserve(32768);
+            t_idx.entries.reserve(131072);
 
             std::vector<uint32_t> term_seen(num_terms, 0);
             uint32_t cur_epoch = 1;
@@ -689,6 +696,7 @@ int main(int argc, char** argv) {
                                     if (term_seen[term_id] != cur_epoch) {
                                         term_seen[term_id] = cur_epoch;
                                         t_idx.term_counts[term_id]++;
+                                        t_idx.entries.push_back({(uint32_t)term_id, doc_id});
                                     }
                                 }
                             }
@@ -722,112 +730,20 @@ int main(int argc, char** argv) {
         term_offsets[term_id + 1] = cur;
     }
 
-    // Free thread term_counts now
-    for (size_t t = 0; t < num_threads; ++t) {
-        thread_indices[t].term_counts.clear();
-        thread_indices[t].term_counts.shrink_to_fit();
-    }
-
     uint32_t total_postings = term_offsets[num_terms];
     std::vector<uint32_t> postings_data(total_postings);
 
-    // Pass 2: High-throughput 1MB buffered streaming scatter (cuts 250,000 pread syscalls down to ~20 per thread!)
+    // Pass 2: Ultra-fast parallel in-memory scatter (0ms file I/O!)
     threads.clear();
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
-            size_t start = split_points[t];
-            size_t end = split_points[t + 1];
             uint32_t* starts = &thread_start[t * num_terms];
-
-            std::vector<uint32_t> term_seen(num_terms, 0);
-            uint32_t cur_epoch = 1;
-
-            static constexpr size_t BUF_CAP = 1048576; // 1 MB
-            std::vector<char> io_buf(BUF_CAP + 65536);
-            size_t cur_file_pos = start;
-            size_t leftover = 0;
-
-            while (cur_file_pos < end || leftover > 0) {
-                if (cur_file_pos < end) {
-                    size_t read_bytes = std::min(BUF_CAP, end - cur_file_pos);
-                    ssize_t n = rf.pread_bytes(io_buf.data() + leftover, read_bytes, cur_file_pos);
-                    if (n <= 0 && leftover == 0) break;
-                    if (n > 0) {
-                        cur_file_pos += n;
-                        leftover += n;
-                    }
-                }
-
-                const char* buf_start = io_buf.data();
-                const char* buf_limit = io_buf.data() + leftover;
-                const char* p = buf_start;
-
-                const char* parse_limit = buf_limit;
-                if (cur_file_pos < end) {
-                    const char* last_nl = nullptr;
-                    for (const char* q = buf_limit - 1; q >= p; --q) {
-                        if (*q == '\n') { last_nl = q; break; }
-                    }
-                    if (last_nl) parse_limit = last_nl + 1;
-                    else break;
-                }
-
-                while (p < parse_limit) {
-                    const char* nl = (const char*)std::memchr(p, '\n', parse_limit - p);
-                    const char* line_end = nl ? nl : parse_limit;
-                    if (line_end > p && *(line_end - 1) == '\r') line_end--;
-
-                    const char* tab = (const char*)std::memchr(p, '\t', line_end - p);
-                    if (tab) {
-                        uint32_t doc_id = 0;
-                        const char* cur = p;
-                        while (cur < tab && *cur >= '0' && *cur <= '9') {
-                            doc_id = doc_id * 10 + (*cur - '0');
-                            cur++;
-                        }
-
-                        const char* text_start = tab + 1;
-                        if (cur_epoch == 0xFFFFFFF0) {
-                            std::fill(term_seen.begin(), term_seen.end(), 0);
-                            cur_epoch = 1;
-                        }
-                        const char* tp = text_start;
-                        while (tp < line_end) {
-                            while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
-                            if (tp >= line_end) break;
-                            const char* w_start = tp;
-                            uint64_t h = 0xcbf29ce484222325ULL;
-                            while (tp < line_end) {
-                                uint8_t ch = CHAR_MAP[(uint8_t)*tp];
-                                if (ch == 0) break;
-                                h = (h ^ ch) * 0x100000001b3ULL;
-                                tp++;
-                            }
-                            size_t w_len = tp - w_start;
-
-                            uint32_t bit_idx = (uint32_t)(h ^ (h >> 32)) & 262143;
-                            if ((TERM_FILTER[bit_idx >> 6] & (1ULL << (bit_idx & 63))) != 0) {
-                                int term_id = term_table.find(w_start, w_len, h);
-                                if (term_id != -1) {
-                                    if (term_seen[term_id] != cur_epoch) {
-                                        term_seen[term_id] = cur_epoch;
-                                        uint32_t slot = starts[term_id]++;
-                                        postings_data[slot] = doc_id;
-                                    }
-                                }
-                            }
-                        }
-                        cur_epoch++;
-                    }
-                    p = nl ? nl + 1 : parse_limit;
-                }
-
-                size_t consumed = p - buf_start;
-                leftover -= consumed;
-                if (leftover > 0 && consumed > 0) {
-                    std::memmove(io_buf.data(), buf_start + consumed, leftover);
-                }
+            for (const auto& entry : thread_indices[t].entries) {
+                uint32_t slot = starts[entry.term_id]++;
+                postings_data[slot] = entry.doc_id;
             }
+            std::vector<PostingEntry>().swap(thread_indices[t].entries);
+            std::vector<uint32_t>().swap(thread_indices[t].term_counts);
         });
     }
     for (auto& th : threads) th.join();

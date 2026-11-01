@@ -35,3 +35,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 28 | Sub-second bidirectional Dijkstra with packed 8-byte Edge CSR cache efficiency | run-065addedb79b | 1.047 | 266.3 | 43.63 |
 | 29 | Sub-second bidirectional Dijkstra with packed 8-byte Edge CSR cache efficiency | run-3b2c6486e055 | 0.972 | 266.7 | 44.43 |
 | 30 | Sub-second bidirectional Dijkstra with packed 8-byte Edge CSR cache efficiency | run-ef53b59aa403 | 1.008 | 267.3 | 44.02 |
+| 31 | 128K generation-tagged hash map Dijkstra + 12 worker threads (M=179MB, T=0.796s, +3.74 pts jump) | run-f46a27450686 | 0.796 | 179.1 | 48.17 |

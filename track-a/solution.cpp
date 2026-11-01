@@ -469,7 +469,6 @@ int main(int argc, char** argv) {
                             uint32_t pos = cur_pos[gid]++;
                             lat_pool[pos] = rec.lat;
                         }
-                        std::vector<RawRecord>().swap(parse_data[pt].hour_records[h]);
                     }
 
                     const char* hr_str = GLOBAL_HOURS[h];

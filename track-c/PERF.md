@@ -47,3 +47,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 40 | Hardware CRC32 + single barrier consistency | run-d24ed829103c | 0.103 | 49.2 | 56.55 |
 | 41 | Hardware CRC32 + single barrier consistency | run-4b70d9df7617 | 0.104 | 49.4 | 56.46 |
 | 42 | Hardware CRC32 + single barrier consistency | run-a88c842e7456 | 0.102 | 49.7 | 56.61 |
+| 44 | Sub-100ms parse (T=0.099s) with incremental 256KB madvise streaming | run-ac49af563afd | 0.099 | 48.0 | 56.95 |
