@@ -185,13 +185,6 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         if (lat_ptr < limit && *lat_ptr == '\n') lat_ptr++;
         p = lat_ptr;
     }
-#ifndef _WIN32
-    if (end > start) {
-        uintptr_t page_start = (uintptr_t)(buf + start) & ~4095ULL;
-        uintptr_t page_end = ((uintptr_t)(buf + end) + 4095ULL) & ~4095ULL;
-        madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
-    }
-#endif
 }
 
 inline char* fast_u64(char* p, uint64_t val) {
@@ -231,14 +224,26 @@ int main(int argc, char** argv) {
     }
     for (auto& th : threads) th.join();
 
-    std::vector<std::string_view> global_endpoints;
+    std::vector<std::string_view> raw_endpoints;
     for (size_t i = 0; i < num_threads; ++i) {
-        for (const auto& ep : parse_data[i].endpoints) global_endpoints.push_back(ep);
+        for (const auto& ep : parse_data[i].endpoints) raw_endpoints.push_back(ep);
     }
-    std::sort(global_endpoints.begin(), global_endpoints.end());
-    global_endpoints.erase(std::unique(global_endpoints.begin(), global_endpoints.end()), global_endpoints.end());
+    std::sort(raw_endpoints.begin(), raw_endpoints.end());
+    raw_endpoints.erase(std::unique(raw_endpoints.begin(), raw_endpoints.end()), raw_endpoints.end());
 
-    size_t num_eps = global_endpoints.size();
+    size_t num_eps = raw_endpoints.size();
+    size_t pool_bytes = 0;
+    for (auto ep : raw_endpoints) pool_bytes += ep.size();
+
+    std::string ep_pool;
+    ep_pool.reserve(pool_bytes + 16);
+    std::vector<std::string_view> global_endpoints(num_eps);
+    for (size_t i = 0; i < num_eps; ++i) {
+        size_t off = ep_pool.size();
+        ep_pool.append(raw_endpoints[i].data(), raw_endpoints[i].size());
+        global_endpoints[i] = std::string_view(ep_pool.data() + off, raw_endpoints[i].size());
+    }
+
     threads.clear();
     for (size_t i = 0; i < num_threads; ++i) {
         threads.emplace_back([&, i]() {
@@ -250,6 +255,12 @@ int main(int argc, char** argv) {
         });
     }
     for (auto& th : threads) th.join();
+
+    // RELEASE INPUT FILE FROM MEMORY
+    mf.close();
+#ifndef _WIN32
+    malloc_trim(0);
+#endif
 
     std::vector<std::string> thread_outputs(num_threads);
     threads.clear();
