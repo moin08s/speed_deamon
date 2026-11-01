@@ -52,7 +52,7 @@ struct MappedFile {
         if (fstat(fd, &st) < 0) { ::close(fd); return false; }
         size = st.st_size;
         if (size == 0) return true;
-        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
         return data != MAP_FAILED;
 #endif
     }
@@ -544,13 +544,13 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // High-speed lock-free spin barrier
+            sync_point.arrive_and_wait();
+
             // Thread 0 unmaps records.csv to drop RSS before reduction phase
             if (t == 0) {
                 mf.close();
             }
-
-            // High-speed lock-free spin barrier
-            sync_point.arrive_and_wait();
 
             // Phase 2: Parallel country reduction directly in the same thread
             size_t c_start = t * c_chunk;

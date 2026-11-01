@@ -52,7 +52,7 @@ struct MappedFile {
         if (fstat(fd, &st) < 0) { ::close(fd); return false; }
         size = st.st_size;
         if (size == 0) return true;
-        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
         return data != MAP_FAILED;
 #endif
     }
@@ -420,7 +420,8 @@ int main(int argc, char** argv) {
             size_t h_end = std::min((size_t)72, h_start + hours_per_thread);
 
             if (h_start < h_end) {
-                td.output_buf.resize(600000);
+                size_t max_lines = (h_end - h_start) * num_eps;
+                td.output_buf.resize(std::max((size_t)1048576, max_lines * 128 + 65536));
                 char* out_ptr = td.output_buf.data();
 
                 std::vector<uint32_t> ep_counts(num_eps);
