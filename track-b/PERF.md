@@ -54,3 +54,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 47 | Removed legacy Python scripts reducing S lines to 896 | run-e6827ff66dbc | 0.6363 | 143.6 | 52.88 |
 | 48 | Standalone C++ solution execution on host page cache | run-db95b7bc87b8 | 0.6619 | 141.9 | 52.50 |
 | 49 | Fast direct scatter with 896 S-lines (New PB 53.22 pts) | run-41ad8c96e700 | 0.6202 | 141.4 | 53.22 |
+| 50 | Compact doc-terms streaming index + pre-reserved non-reallocating memory layout (New PB 55.36 pts) | run-c560ae4d73ae | 0.4306 | 218.1 | 55.36 |

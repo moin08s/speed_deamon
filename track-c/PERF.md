@@ -55,3 +55,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 49 | Sub-101ms persistent barrier deduplication (New PB 57.08 pts) | run-232e294a5b35 | 0.1009 | 46.6 | 57.08 |
 | 50 | High-throughput persistent barrier deduplication consistency | run-87c52c39e337 | 0.1046 | 46.6 | 56.68 |
 | 51 | 64-bit packed composite key reduction (New PB 57.28 pts) | run-e06ae76ab7ea | 0.1113 | 35.3 | 57.28 |
+| 52 | 12-thread barrier reduction with right-sized 35K item buffer (New PB 57.40 pts) | run-18168e9536bc | 0.1072 | 40.3 | 57.40 |
