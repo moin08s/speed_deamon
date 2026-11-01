@@ -238,7 +238,7 @@ int main(int argc, char** argv) {
     if (!mf.open((data_dir + "/records.csv").c_str())) return 1;
     if (!mf.size) { fclose(fopen((out_dir + "/aggregates.txt").c_str(), "wb")); return 0; }
 
-    const size_t num_threads = 8;
+    const size_t num_threads = 12;
     std::vector<size_t> splits(num_threads + 1, 0);
     splits[num_threads] = mf.size;
     for (size_t i = 1; i < num_threads; ++i) splits[i] = find_split(mf.data, mf.size, i * (mf.size / num_threads));
@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
         ths.emplace_back([&, t]() {
             auto& td = tdata[t];
             td.stats.resize(num_countries);
-            td.items.reserve(260000);
+            td.items.reserve((splits[t + 1] - splits[t]) / 40 + 1024);
 
             const char* p = mf.data + splits[t], *lim = mf.data + splits[t + 1];
             if (t == 0) {

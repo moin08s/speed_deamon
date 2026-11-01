@@ -440,14 +440,11 @@ int main(int argc, char** argv) {
         uint32_t offset;
         uint32_t len;
     };
-    struct Posting {
-        uint32_t term_id;
-        uint32_t doc_id;
-    };
     struct ThreadIndex {
         std::vector<DocInfo> docs;
         std::vector<uint32_t> term_counts;
-        std::vector<Posting> postings;
+        std::vector<uint32_t> term_ids;
+        std::vector<uint32_t> doc_ends;
     };
     std::vector<ThreadIndex> thread_indices(num_threads);
     std::vector<std::thread> threads;
@@ -458,6 +455,10 @@ int main(int argc, char** argv) {
             const char* limit = mf.data + split_points[t + 1];
             auto& t_idx = thread_indices[t];
             t_idx.term_counts.assign(num_terms, 0);
+            size_t chunk_len = split_points[t + 1] - split_points[t];
+            t_idx.docs.reserve(chunk_len / 500 + 1024);
+            t_idx.term_ids.reserve(chunk_len / 16 + 4096);
+            t_idx.doc_ends.reserve(chunk_len / 500 + 1024);
             std::vector<uint32_t> term_seen(num_terms, 0);
             uint32_t cur_epoch = 1;
             while (p < limit) {
@@ -498,10 +499,11 @@ int main(int argc, char** argv) {
                             if (term_seen[term_id] != cur_epoch) {
                                 term_seen[term_id] = cur_epoch;
                                 t_idx.term_counts[term_id]++;
-                                t_idx.postings.push_back({(uint32_t)term_id, doc_id});
+                                t_idx.term_ids.push_back((uint32_t)term_id);
                             }
                         }
                     }
+                    t_idx.doc_ends.push_back((uint32_t)t_idx.term_ids.size());
                     cur_epoch++;
                 }
                 p = nl ? nl + 1 : limit;
@@ -529,12 +531,20 @@ int main(int argc, char** argv) {
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
             auto& starts = thread_start[t];
-            const auto& posts = thread_indices[t].postings;
-            for (const auto& p : posts) {
-                uint32_t slot = starts[p.term_id]++;
-                postings_data[slot] = p.doc_id;
+            auto& t_idx = thread_indices[t];
+            size_t n_docs = t_idx.docs.size();
+            uint32_t cur_st = 0;
+            for (size_t di = 0; di < n_docs; ++di) {
+                uint32_t doc_id = t_idx.docs[di].doc_id;
+                uint32_t end_st = t_idx.doc_ends[di];
+                for (uint32_t k = cur_st; k < end_st; ++k) {
+                    uint32_t tid = t_idx.term_ids[k];
+                    postings_data[starts[tid]++] = doc_id;
+                }
+                cur_st = end_st;
             }
-            std::vector<Posting>().swap(thread_indices[t].postings);
+            std::vector<uint32_t>().swap(t_idx.term_ids);
+            std::vector<uint32_t>().swap(t_idx.doc_ends);
         });
     }
     for (auto& th : threads) th.join();
