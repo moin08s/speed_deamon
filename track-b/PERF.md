@@ -52,3 +52,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 45 | MAP_SHARED host page cache streaming scatter | run-db07fac521a8 | 0.6866 | 150.5 | 51.25 |
 | 46 | Streaming direct scatter with 1MB buffered postings | run-758f84922e04 | 0.6160 | 144.1 | 52.40 |
 | 47 | Removed legacy Python scripts reducing S lines to 896 | run-e6827ff66dbc | 0.6363 | 143.6 | 52.88 |
+| 48 | Standalone C++ solution execution on host page cache | run-db95b7bc87b8 | 0.6619 | 141.9 | 52.50 |
