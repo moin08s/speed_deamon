@@ -48,7 +48,7 @@ struct MappedFile {
         if (fstat(fd, &st) < 0) { ::close(fd); return false; }
         size = st.st_size;
         if (size == 0) return true;
-        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
         return data != MAP_FAILED;
 #endif
     }
@@ -128,59 +128,112 @@ void load_graph(const char* path, CSRGraph& g) {
     g.n = parse_uint(p, limit);
     g.m = parse_uint(p, limit);
 
+    const size_t num_threads = 6;
+
     // Advance p to first edge line
     while (p < limit && *p != '\n') p++;
     if (p < limit && *p == '\n') p++;
 
     const char* edges_start = p;
+    size_t edges_size = limit - edges_start;
 
-    // Single pass 1: direct degree counting into head arrays (zero extra memory!)
-    g.fwd_head.assign(g.n + 2, 0);
-    g.bwd_head.assign(g.n + 2, 0);
-
-    const char* cur = edges_start;
-    while (cur < limit) {
-        while (cur < limit && (unsigned char)*cur <= ' ') cur++;
-        if (cur >= limit) break;
-        uint32_t u = parse_uint(cur, limit);
-        uint32_t v = parse_uint(cur, limit);
-        while (cur < limit && *cur != '\n') cur++;
-        if (cur < limit && *cur == '\n') cur++;
-        if (u < g.n) g.fwd_head[u + 1]++;
-        if (v < g.n) g.bwd_head[v + 1]++;
+    std::vector<size_t> split_points(num_threads + 1, 0);
+    split_points[0] = 0;
+    for (size_t i = 1; i < num_threads; ++i) {
+        size_t target = i * (edges_size / num_threads);
+        const char* nl = (const char*)std::memchr(edges_start + target, '\n', edges_size - target);
+        if (nl) split_points[i] = (nl - edges_start) + 1;
+        else split_points[i] = edges_size;
     }
+    split_points[num_threads] = edges_size;
 
-    for (size_t i = 1; i <= g.n; ++i) {
-        g.fwd_head[i] += g.fwd_head[i - 1];
-        g.bwd_head[i] += g.bwd_head[i - 1];
+    struct ThreadDeg {
+        std::vector<uint32_t> fwd;
+        std::vector<uint32_t> bwd;
+    };
+    std::vector<ThreadDeg> t_deg(num_threads);
+    std::vector<std::thread> ths;
+    ths.reserve(num_threads);
+
+    // Pass 1: Parallel degree counting
+    for (size_t t = 0; t < num_threads; ++t) {
+        ths.emplace_back([&, t]() {
+            const char* cur = edges_start + split_points[t];
+            const char* chunk_lim = edges_start + split_points[t + 1];
+            auto& td = t_deg[t];
+            td.fwd.assign(g.n, 0);
+            td.bwd.assign(g.n, 0);
+
+            while (cur < chunk_lim) {
+                while (cur < chunk_lim && (unsigned char)*cur <= ' ') cur++;
+                if (cur >= chunk_lim) break;
+                uint32_t u = parse_uint(cur, chunk_lim);
+                uint32_t v = parse_uint(cur, chunk_lim);
+                parse_uint(cur, chunk_lim); // skip w in pass 1
+                if (u < g.n) td.fwd[u]++;
+                if (v < g.n) td.bwd[v]++;
+            }
+        });
     }
-    g.fwd_head[g.n + 1] = g.fwd_head[g.n];
-    g.bwd_head[g.n + 1] = g.bwd_head[g.n];
+    for (auto& th : ths) th.join();
 
-    g.fwd_edges.resize(g.fwd_head[g.n]);
-    g.bwd_edges.resize(g.bwd_head[g.n]);
+    // Compute heads and convert t_deg in-place into thread start offsets (zero extra memory!)
+    g.fwd_head.assign(g.n + 1, 0);
+    g.bwd_head.assign(g.n + 1, 0);
 
-    std::vector<uint32_t> fwd_cur(g.fwd_head.begin(), g.fwd_head.begin() + g.n + 1);
-    std::vector<uint32_t> bwd_cur(g.bwd_head.begin(), g.bwd_head.begin() + g.n + 1);
-
-    // Pass 2: sequential direct placement of edges
-    cur = edges_start;
-    while (cur < limit) {
-        while (cur < limit && (unsigned char)*cur <= ' ') cur++;
-        if (cur >= limit) break;
-        uint32_t u = parse_uint(cur, limit);
-        uint32_t v = parse_uint(cur, limit);
-        uint32_t w = parse_uint(cur, limit);
-
-        if (u < g.n) {
-            uint32_t pf = fwd_cur[u]++;
-            g.fwd_edges[pf] = {v, w};
+    uint32_t cur_f = 0, cur_b = 0;
+    for (uint32_t i = 0; i < g.n; ++i) {
+        g.fwd_head[i] = cur_f;
+        for (size_t t = 0; t < num_threads; ++t) {
+            uint32_t cnt = t_deg[t].fwd[i];
+            t_deg[t].fwd[i] = cur_f;
+            cur_f += cnt;
         }
-        if (v < g.n) {
-            uint32_t pb = bwd_cur[v]++;
-            g.bwd_edges[pb] = {u, w};
+
+        g.bwd_head[i] = cur_b;
+        for (size_t t = 0; t < num_threads; ++t) {
+            uint32_t cnt = t_deg[t].bwd[i];
+            t_deg[t].bwd[i] = cur_b;
+            cur_b += cnt;
         }
     }
+    g.fwd_head[g.n] = cur_f;
+    g.bwd_head[g.n] = cur_b;
+
+    g.fwd_edges.resize(cur_f);
+    g.bwd_edges.resize(cur_b);
+
+    // Pass 2: Parallel direct scatter into packed 8-byte Edge CSR arrays
+    ths.clear();
+    for (size_t t = 0; t < num_threads; ++t) {
+        ths.emplace_back([&, t]() {
+            const char* cur = edges_start + split_points[t];
+            const char* chunk_lim = edges_start + split_points[t + 1];
+            auto& f_start = t_deg[t].fwd;
+            auto& b_start = t_deg[t].bwd;
+
+            while (cur < chunk_lim) {
+                while (cur < chunk_lim && (unsigned char)*cur <= ' ') cur++;
+                if (cur >= chunk_lim) break;
+                uint32_t u = parse_uint(cur, chunk_lim);
+                uint32_t v = parse_uint(cur, chunk_lim);
+                uint32_t w = parse_uint(cur, chunk_lim);
+
+                if (u < g.n) {
+                    uint32_t pf = f_start[u]++;
+                    g.fwd_edges[pf] = {v, w};
+                }
+                if (v < g.n) {
+                    uint32_t pb = b_start[v]++;
+                    g.bwd_edges[pb] = {u, w};
+                }
+            }
+        });
+    }
+    for (auto& th : ths) th.join();
+
+    t_deg.clear();
+    t_deg.shrink_to_fit();
 
     mf.close(); // Unmap graph.txt immediately
 #ifndef _WIN32
