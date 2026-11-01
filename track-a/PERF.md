@@ -46,4 +46,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 39 | Direct-mapped 4096-slot CRC32 endpoint cache (92.6% instant 1-cycle hit rate) | run-1e38c18a5e86 | 0.076 | 39.7 | 65.49 |
 | 40 | Direct-mapped 4096-slot CRC32 endpoint cache consistency | run-c3320a5c7b0a | 0.076 | 39.6 | 65.49 |
 | 41 | Direct-mapped 4096-slot CRC32 endpoint cache consistency | run-b71ec5da13bc | 0.077 | 40.0 | 65.35 |
-| 42 | Persistent 12-thread barrier execution + direct output buffer writing + early unmap | pending | pending | pending | pending |
+| 42 | Persistent 12-thread barrier execution + direct output buffer writing + early unmap | run-1a9b6e958833 | 0.076 | 58.3 | 64.02 |
+| 43 | Zero-mmap streaming pread chunk parser + persistent barrier (drops 40MB file from RSS) | pending | pending | pending | pending |

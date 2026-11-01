@@ -46,3 +46,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 39 | Two-pass streaming pread direct scatter (eliminated 270MB in-memory posting vectors) | run-d6fb20f889f5 | 0.643 | 152.0 | 51.40 |
 | 40 | High-throughput 1MB buffered streaming scatter (cuts 250k pread syscalls) | run-1490e70b788e | 0.622 | 153.0 | 51.63 |
 | 41 | High-throughput 1MB buffered streaming scatter consistency | run-98adc0c15740 | 0.664 | 153.4 | 50.91 |
+| 42 | High-throughput 1MB buffered streaming scatter (New PB 0.608s) | run-f12cb2777d37 | 0.608 | 152.5 | 51.89 |
