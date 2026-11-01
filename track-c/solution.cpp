@@ -78,10 +78,14 @@ struct CountryStats {
     int64_t sum_cents = 0;
     int64_t min_cents = 0;
     int64_t max_cents = 0;
-    bool has_cents = false;
     int64_t sum_name_len = 0;
     int64_t sum_note_len = 0;
-    std::vector<uint64_t> name_hashes;
+    bool has_cents = false;
+};
+
+struct NameEntry {
+    uint16_t cid;
+    uint64_t hash;
 };
 
 inline char* fast_i64(char* p, int64_t val) {
@@ -317,7 +321,8 @@ int main(int argc, char** argv) {
     std::cin.tie(NULL);
 
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 2);
+    mallopt(M_ARENA_MAX, 1);
+    mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
@@ -408,7 +413,6 @@ int main(int argc, char** argv) {
 
     uint16_t unmatched_raw = get_country_id("_UNMATCHED", 10);
 
-    // Canonical alphabetical sort of countries
     size_t num_countries = raw_country_names.size();
     std::vector<uint16_t> sorted_order(num_countries);
     for (size_t i = 0; i < num_countries; ++i) sorted_order[i] = (uint16_t)i;
@@ -447,7 +451,6 @@ int main(int argc, char** argv) {
     split_points[0] = 0;
     split_points[num_threads] = mf.size;
 
-    // Fast sequential split points calculation (zero thread spawning overhead!)
     for (size_t i = 1; i < num_threads; ++i) {
         size_t target = i * (mf.size / num_threads);
         split_points[i] = find_fast_split(mf.data, mf.size, target);
@@ -456,20 +459,22 @@ int main(int argc, char** argv) {
     std::barrier sync_point(num_threads);
     std::vector<std::string> thread_outputs(num_threads);
     std::vector<std::vector<CountryStats>> thread_stats(num_threads, std::vector<CountryStats>(num_countries));
+    std::vector<std::vector<uint64_t>> thread_hashes(num_threads);
+    std::vector<std::vector<uint32_t>> thread_offsets(num_threads, std::vector<uint32_t>(num_countries + 1, 0));
+
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
     size_t c_chunk = (num_countries + num_threads - 1) / num_threads;
 
-    // Single unified thread execution: Phase 1 (parse) + Barrier + Phase 2 (reduce)
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
             size_t start = split_points[t];
             size_t end = split_points[t + 1];
             if (start < end) {
                 auto& stats = thread_stats[t];
-                for (auto& cs : stats) {
-                    cs.name_hashes.reserve(128);
-                }
+                std::vector<NameEntry> name_entries;
+                name_entries.reserve(35000);
+                std::vector<uint32_t> c_counts(num_countries, 0);
 
                 const char* p = mf.data + start;
                 const char* limit = mf.data + end;
@@ -512,7 +517,9 @@ int main(int argc, char** argv) {
                     }
                     cs.sum_name_len += name_len;
                     cs.sum_note_len += note_len;
-                    cs.name_hashes.push_back(name_hash);
+
+                    name_entries.push_back({cid, name_hash});
+                    c_counts[cid]++;
 
 #ifndef _WIN32
                     if (__builtin_expect((size_t)(p - last_advise) >= 262144, 0)) {
@@ -536,15 +543,22 @@ int main(int argc, char** argv) {
                 }
 #endif
 
-                for (auto& cs : stats) {
-                    if (!cs.name_hashes.empty()) {
-                        std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
-                        cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
-                    }
+                // Partition name_entries by country via ultra-fast 1-pass counting sort
+                auto& offsets = thread_offsets[t];
+                offsets[0] = 0;
+                for (size_t c = 0; c < num_countries; ++c) {
+                    offsets[c + 1] = offsets[c] + c_counts[c];
+                }
+
+                thread_hashes[t].resize(name_entries.size());
+                std::vector<uint32_t> cur_slot = offsets;
+                uint64_t* out_hashes = thread_hashes[t].data();
+                for (const auto& ne : name_entries) {
+                    out_hashes[cur_slot[ne.cid]++] = ne.hash;
                 }
             }
 
-            // High-speed lock-free spin barrier
+            // Barrier: Wait for all threads to finish Phase 1 parse & counting sort
             sync_point.arrive_and_wait();
 
             // Thread 0 unmaps records.csv to drop RSS before reduction phase
@@ -560,7 +574,7 @@ int main(int argc, char** argv) {
                 out.reserve((c_end - c_start) * 256);
                 char line_buf[2048];
                 std::vector<uint64_t> all_hashes;
-                all_hashes.reserve(4096);
+                all_hashes.reserve(16384);
 
                 for (size_t cid = c_start; cid < c_end; ++cid) {
                     CountryStats combined;
@@ -590,8 +604,12 @@ int main(int argc, char** argv) {
                     } else {
                         all_hashes.clear();
                         for (size_t pt = 0; pt < num_threads; ++pt) {
-                            const auto& nh = thread_stats[pt][cid].name_hashes;
-                            all_hashes.insert(all_hashes.end(), nh.begin(), nh.end());
+                            uint32_t st = thread_offsets[pt][cid];
+                            uint32_t en = thread_offsets[pt][cid + 1];
+                            if (en > st) {
+                                const uint64_t* ptr = thread_hashes[pt].data() + st;
+                                all_hashes.insert(all_hashes.end(), ptr, ptr + (en - st));
+                            }
                         }
                         std::sort(all_hashes.begin(), all_hashes.end());
                         all_hashes.erase(std::unique(all_hashes.begin(), all_hashes.end()), all_hashes.end());
