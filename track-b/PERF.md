@@ -36,4 +36,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 29 | L1 32KB Bloom filter (95.7% word skip) + madvise DONTNEED + M_ARENA_MAX=1 + malloc_trim | run-abeddcedc6a7 | 0.551 | 316 | 50.27 |
 | 30 | AVX2 SIMD candidate pruner & word-scan consistency | run-214ff6a9a88f | 0.506 | 317 | 51.19 |
 | 31 | Fast balanced scatter execution consistency | run-024b39298f87 | 0.505 | 317 | 51.20 |
-| 32 | Incremental 256KB madvise DONTNEED page cache eviction during Pass 1 doc parsing | pending | | | |
+| 32 | Incremental 256KB madvise DONTNEED page cache eviction during Pass 1 doc parsing | run-9650794af4ae | 0.495 | 317 | 51.39 |
+| 33 | Restored clean thread iteration with zero syscall lock contention | pending | | | |

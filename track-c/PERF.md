@@ -36,4 +36,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 29 | Parallel chunk partitioning & fast unquoted comma scan consistency | run-05e6f08b7f16 | 0.101 | 48 | 56.98 |
 | 30 | Consecutive filter with sort/unique deduplication consistency | run-42f059206bbc | 0.103 | 48 | 56.73 |
 | 31 | Composite (country, hash) key deduplication eliminating 2,880 separate heap vectors | run-a0eb17a0302e | 0.132 | 44.1 | 54.50 |
-| 32 | Single flat array sort + O(N) linear scan deduplication + incremental 256KB madvise eviction | pending | | | |
+| 32 | Single flat array sort + O(N) linear scan deduplication + incremental 256KB madvise eviction | run-b811bbc93003 | 0.426 | 38.6 | 42.28 |
+| 33 | Parallel thread-local keys sort + single-pass linear scan unique names + zero loop madvise | pending | | | |

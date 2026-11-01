@@ -23,4 +23,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 16 | Restored optimal 8-worker thread topology (M=308MB balance) | run-5d9c2c0b5ebd | 1.07 | 308 | 43.22 |
 | 17 | 32-bit compact test (overflow on weights >= 2^32) | run-c0f388e9a0be | 1.07 | 183 | failure (hash mismatch) |
 | 18 | 6 P-core worker topology + 64-bit distance precision + single-arena allocation | run-03709cff4d51 | 1.23 | 266 | 42.50 |
-| 19 | 12-thread parallel lock-free CSR graph loader + pre-allocated sequential WorkerState 12-thread query batching | pending | | | |
+| 19 | 12-thread parallel lock-free CSR graph loader + pre-allocated sequential WorkerState 12-thread query batching | run-db3ff45bae69 | 1.064 | 437 | 41.38 |
+| 20 | Min-key balanced bidirectional Dijkstra + 6-worker P-core topology + post-load malloc_trim | pending | | | |

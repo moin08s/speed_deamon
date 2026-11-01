@@ -125,7 +125,7 @@ void load_graph(const char* path, CSRGraph& g) {
     g.n = parse_uint(p, limit);
     g.m = parse_uint(p, limit);
 
-    const size_t num_threads = 12;
+    const size_t num_threads = 6;
 
     // Advance p to first edge line
     while (p < limit && *p != '\n') p++;
@@ -239,6 +239,9 @@ void load_graph(const char* path, CSRGraph& g) {
     for (auto& th : ths) th.join();
 
     mf.close(); // Unmap graph.txt immediately
+#ifndef _WIN32
+    malloc_trim(0);
+#endif
 }
 
 using Element = std::pair<uint64_t, uint32_t>; // (distance, node)
@@ -284,12 +287,17 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             break;
         }
 
-        if (ws.hf.size() <= ws.hb.size()) {
+        if (ws.hf.front().first <= ws.hb.front().first) {
             std::pop_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
             auto [d, u] = ws.hf.back();
             ws.hf.pop_back();
 
             if (d > ws.dist_f[u] || d >= best) continue;
+
+            if (ws.dist_b[u] != UINT64_MAX) {
+                uint64_t cand = d + ws.dist_b[u];
+                if (cand < best) best = cand;
+            }
 
             uint32_t st = g.fwd_head[u];
             uint32_t en = g.fwd_head[u + 1];
@@ -323,6 +331,11 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             ws.hb.pop_back();
 
             if (d > ws.dist_b[u] || d >= best) continue;
+
+            if (ws.dist_f[u] != UINT64_MAX) {
+                uint64_t cand = d + ws.dist_f[u];
+                if (cand < best) best = cand;
+            }
 
             uint32_t st = g.bwd_head[u];
             uint32_t en = g.bwd_head[u + 1];
@@ -394,7 +407,7 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 12;
+    const size_t num_threads = 6;
     std::vector<WorkerState> worker_states(num_threads);
     for (size_t t = 0; t < num_threads; ++t) {
         worker_states[t].init(g.n);

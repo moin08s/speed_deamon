@@ -478,26 +478,10 @@ int main(int argc, char** argv) {
                     last_key = key;
                     keys.push_back(key);
                 }
-
-#ifndef _WIN32
-                if (p - last_madv_page >= 262144) {
-                    uintptr_t page_start = (uintptr_t)last_madv_page & ~4095ULL;
-                    uintptr_t page_end = (uintptr_t)p & ~4095ULL;
-                    if (page_end > page_start) {
-                        madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
-                    }
-                    last_madv_page = p;
-                }
-#endif
             }
 
-#ifndef _WIN32
-            uintptr_t page_start = (uintptr_t)last_madv_page & ~4095ULL;
-            uintptr_t page_end = ((uintptr_t)limit + 4095ULL) & ~4095ULL;
-            if (page_end > page_start) {
-                madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
-            }
-#endif
+            std::sort(keys.begin(), keys.end());
+            keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
         });
     }
     for (auto& th : threads) th.join();
