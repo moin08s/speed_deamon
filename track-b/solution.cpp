@@ -508,6 +508,13 @@ int main(int argc, char** argv) {
                 }
                 p = nl ? nl + 1 : limit;
             }
+#ifndef _WIN32
+            if (split_points[t + 1] > split_points[t]) {
+                uintptr_t p_start = (uintptr_t)(mf.data + split_points[t]) & ~4095ULL;
+                uintptr_t p_end = ((uintptr_t)(mf.data + split_points[t + 1]) + 4095ULL) & ~4095ULL;
+                madvise((void*)p_start, p_end - p_start, MADV_DONTNEED);
+            }
+#endif
         });
     }
     for (auto& th : threads) th.join();
@@ -548,6 +555,9 @@ int main(int argc, char** argv) {
         });
     }
     for (auto& th : threads) th.join();
+#ifndef _WIN32
+    malloc_trim(0);
+#endif
     uint32_t max_doc_id = 0;
     for (size_t t = 0; t < num_threads; ++t) {
         for (const auto& d : thread_indices[t].docs) {
