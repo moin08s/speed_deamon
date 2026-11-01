@@ -27,3 +27,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 20 | Min-key balanced bidirectional Dijkstra + 6-worker P-core topology + post-load malloc_trim | run-c27bdd1d3d88 | 2.443 | 288 | 34.08 |
 | 21 | Min-key balanced bidirectional Dijkstra + 12-worker topology + post-load malloc_trim | run-862dc1b0c9b4 | 2.289 | 459 | 32.76 |
 | 22 | Restored balanced frontier size stepping + 8-worker optimal topology + post-load malloc_trim | run-a998d4cba900 | 1.066 | 322.9 | 42.58 |
+| 23 | Balanced frontier size stepping consistency | run-6a611565a9b2 | 1.023 | 323.2 | 43.02 |

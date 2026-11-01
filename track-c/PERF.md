@@ -39,3 +39,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 32 | Single flat array sort + O(N) linear scan deduplication + incremental 256KB madvise eviction | run-b811bbc93003 | 0.426 | 38.6 | 42.28 |
 | 33 | Restored proven parallel country hash deduplication from commit 05b3c62 | run-1791ba7ce50a | 0.104 | 48.8 | 56.74 |
 | 34 | Parallel country deduplication consistency | run-33e52fda228b | 0.102 | 48.6 | 56.95 |
+| 35 | Parallel country deduplication run consistency | run-02d8d38563ff | 0.104 | 48.5 | 56.77 |
+| 36 | Hardware CRC32 name hashing + single-launch persistent thread barrier + sequential split points | pending | pending | pending | pending |

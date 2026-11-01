@@ -40,3 +40,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 33 | Incremental 256KB madvise page cache eviction in parse_chunk loop | run-3a98b5ec1ec2 | 0.078 | 38.8 | 65.43 |
 | 34 | Restored streaming hour-partitioned reduction with zero syscall lock contention | run-d6cf52ba5c05 | 0.076 | 39.0 | 65.72 |
 | 35 | AVX2 SIMD space delimiter and streaming reduction consistency | run-fabec0aaf02f | 0.076 | 39.1 | 65.73 |
+| 36 | High-throughput streaming parsing consistency | run-0767f077bcda | 0.075 | 38.2 | 65.97 |
