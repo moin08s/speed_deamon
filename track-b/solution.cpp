@@ -69,66 +69,6 @@ struct MappedFile {
     ~MappedFile() { close(); }
 };
 
-struct RawFile {
-#ifdef _WIN32
-    HANDLE hFile = INVALID_HANDLE_VALUE;
-#else
-    int fd = -1;
-#endif
-    size_t size = 0;
-
-    bool open(const char* path) {
-#ifdef _WIN32
-        hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile == INVALID_HANDLE_VALUE) return false;
-        LARGE_INTEGER li;
-        GetFileSizeEx(hFile, &li);
-        size = li.QuadPart;
-        return true;
-#else
-        fd = ::open(path, O_RDONLY);
-        if (fd < 0) return false;
-        struct stat st;
-        if (fstat(fd, &st) < 0) { ::close(fd); fd = -1; return false; }
-        size = st.st_size;
-        return true;
-#endif
-    }
-
-    inline ssize_t pread_bytes(void* buf, size_t count, uint64_t offset) const {
-#ifdef _WIN32
-        OVERLAPPED ov;
-        std::memset(&ov, 0, sizeof(ov));
-        ov.Offset = (DWORD)(offset & 0xFFFFFFFF);
-        ov.OffsetHigh = (DWORD)(offset >> 32);
-        DWORD bytesRead = 0;
-        if (!ReadFile(hFile, buf, (DWORD)count, &bytesRead, &ov)) return -1;
-        return (ssize_t)bytesRead;
-#else
-        return ::pread(fd, buf, count, (off_t)offset);
-#endif
-    }
-
-    void advise_dontneed() {
-#ifndef _WIN32
-        if (fd >= 0) {
-            posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
-        }
-#endif
-    }
-
-    void close() {
-#ifdef _WIN32
-        if (hFile != INVALID_HANDLE_VALUE) { CloseHandle(hFile); hFile = INVALID_HANDLE_VALUE; }
-#else
-        if (fd >= 0) { ::close(fd); fd = -1; }
-#endif
-        size = 0;
-    }
-
-    ~RawFile() { close(); }
-};
-
 static uint8_t CHAR_MAP[256];
 static uint8_t LOWER_MAP[256];
 static void init_tables() {
@@ -183,8 +123,7 @@ inline char* fast_u64(char* p, uint64_t val) {
     return p;
 }
 
-static uint64_t TERM_FILTER[4096]; // 262,144 bits = 32 KB
-
+// Zero-allocation flat term table: stores string pointer directly into mmap!
 struct FastTermTable {
     static constexpr uint32_t CAPACITY = 524288;
     static constexpr uint32_t MASK = CAPACITY - 1;
@@ -199,9 +138,7 @@ struct FastTermTable {
     std::vector<Entry> table;
     int count = 0;
 
-    FastTermTable() : table(CAPACITY) {
-        std::memset(TERM_FILTER, 0, sizeof(TERM_FILTER));
-    }
+    FastTermTable() : table(CAPACITY) {}
 
     static inline uint64_t hash_term(const char* p, size_t len) {
         uint64_t h = 0xcbf29ce484222325ULL;
@@ -213,9 +150,6 @@ struct FastTermTable {
 
     int insert(const char* p, size_t len) {
         uint64_t h = hash_term(p, len);
-        uint32_t bit_idx = (uint32_t)(h ^ (h >> 32)) & 262143;
-        TERM_FILTER[bit_idx >> 6] |= (1ULL << (bit_idx & 63));
-
         uint32_t idx = (uint32_t)h & MASK;
         while (table[idx].hash != 0) {
             if (table[idx].hash == h && table[idx].len == len) {
@@ -305,73 +239,78 @@ bool match_phrase_fast(const char* text, size_t text_len, const std::vector<Term
     size_t L = text_len;
     const TermView& first = terms[0];
     size_t len_first = first.len;
+    if (len_first > L) return false;
 
-    char c1 = to_lower_char(first.data[0]);
-    char c2 = (c1 >= 'a' && c1 <= 'z') ? (c1 - 32) : c1;
+    char c0_low = first.data[0];
+    char c0_up = (c0_low >= 'a' && c0_low <= 'z') ? (char)(c0_low - ('a' - 'A')) : c0_low;
 
-    const char* p = text;
-    const char* text_end = text + L;
+    size_t pos = 0;
+    while (pos + len_first <= L) {
+        size_t rem = L - pos;
+        if (rem < len_first) return false;
+        size_t scan_len = rem - len_first + 1;
+        const char* p_match = find_char_pair_avx2(text + pos, scan_len, c0_low, c0_up);
+        if (!p_match) return false;
+        size_t idx = p_match - text;
 
-    while (p + len_first <= text_end) {
-        size_t rem = text_end - p;
-        const char* match = find_char_pair_avx2(p, rem, c1, c2);
-        if (!match) return false;
-        if (match + len_first > text_end) return false;
-
-        p = match;
-        if (p > text && CHAR_MAP[(uint8_t)*(p - 1)] != 0) {
-            p++;
+        if (idx > 0 && CHAR_MAP[(uint8_t)text[idx - 1]]) {
+            pos = idx + 1;
             continue;
         }
 
-        bool ok = true;
-        for (size_t i = 1; i < len_first; ++i) {
-            if (to_lower_char(p[i]) != to_lower_char(first.data[i])) {
-                ok = false;
+        size_t end_idx = idx + len_first;
+        if (end_idx < L && CHAR_MAP[(uint8_t)text[end_idx]]) {
+            pos = idx + 1;
+            continue;
+        }
+
+        bool eq = true;
+        for (size_t k = 1; k < len_first; ++k) {
+            if (to_lower_char(text[idx + k]) != first.data[k]) {
+                eq = false;
                 break;
             }
         }
-        if (!ok) {
-            p++;
+        if (!eq) {
+            pos = idx + 1;
             continue;
         }
 
-        const char* after = p + len_first;
-        if (after < text_end && CHAR_MAP[(uint8_t)*after] != 0) {
-            p++;
-            continue;
-        }
+        size_t cur_pos = end_idx;
+        bool matched_all = true;
 
-        const char* cur = after;
-        bool all_matched = true;
-        for (size_t k = 1; k < terms.size(); ++k) {
-            const TermView& nxt = terms[k];
-            size_t nxt_len = nxt.len;
+        for (size_t t = 1; t < terms.size(); ++t) {
+            const TermView& term = terms[t];
+            size_t len_t = term.len;
 
-            while (cur < text_end && CHAR_MAP[(uint8_t)*cur] == 0) cur++;
-            if (cur + nxt_len > text_end) {
-                all_matched = false;
+            while (cur_pos < L && CHAR_MAP[(uint8_t)text[cur_pos]] == 0) {
+                cur_pos++;
+            }
+            if (cur_pos + len_t > L) {
+                matched_all = false;
                 break;
             }
-
-            for (size_t i = 0; i < nxt_len; ++i) {
-                if (to_lower_char(cur[i]) != to_lower_char(nxt.data[i])) {
-                    all_matched = false;
+            size_t after_t = cur_pos + len_t;
+            if (after_t < L && CHAR_MAP[(uint8_t)text[after_t]]) {
+                matched_all = false;
+                break;
+            }
+            bool eq_t = true;
+            for (size_t k = 0; k < len_t; ++k) {
+                if (to_lower_char(text[cur_pos + k]) != term.data[k]) {
+                    eq_t = false;
                     break;
                 }
             }
-            if (!all_matched) break;
-
-            const char* after_nxt = cur + nxt_len;
-            if (after_nxt < text_end && CHAR_MAP[(uint8_t)*after_nxt] != 0) {
-                all_matched = false;
+            if (!eq_t) {
+                matched_all = false;
                 break;
             }
-            cur = after_nxt;
+            cur_pos = after_t;
         }
 
-        if (all_matched) return true;
-        p++;
+        if (matched_all) return true;
+        pos = idx + 1;
     }
     return false;
 }
@@ -384,8 +323,12 @@ inline void intersect_slices(const T* a, size_t a_len, const T* b, size_t b_len,
     out.clear();
     if (a_len == 0 || b_len == 0) return;
 
+    if (a_len > b_len) {
+        std::swap(a, b);
+        std::swap(a_len, b_len);
+    }
+    out.reserve(a_len);
     if (b_len > (a_len << 3)) {
-        out.reserve(a_len);
         const T* b_end = b + b_len;
         const T* cur = b;
         for (size_t i = 0; i < a_len; ++i) {
@@ -403,44 +346,30 @@ inline void intersect_slices(const T* a, size_t a_len, const T* b, size_t b_len,
                 cur++;
             }
         }
-    } else if (a_len > (b_len << 3)) {
-        out.reserve(b_len);
-        const T* a_end = a + a_len;
-        const T* cur = a;
-        for (size_t i = 0; i < b_len; ++i) {
-            T x = b[i];
-            size_t step = 1;
-            while (cur + step < a_end && *(cur + step) < x) {
-                cur += step;
-                step <<= 1;
-            }
-            const T* high = (cur + step + 1 < a_end) ? (cur + step + 1) : a_end;
-            cur = std::lower_bound(cur, high, x);
-            if (cur == a_end) break;
-            if (*cur == x) {
-                out.push_back(x);
-                cur++;
-            }
-        }
     } else {
         std::set_intersection(a, a + a_len, b, b + b_len, std::back_inserter(out));
     }
 }
 
 template <typename T>
-inline void difference_slices(const T* left, size_t left_len, const T* right, size_t right_len, std::vector<T>& out) {
+inline void intersect_adaptive(const std::vector<T>& small, const T* big, size_t big_len, std::vector<T>& out) {
+    intersect_slices(small.data(), small.size(), big, big_len, out);
+}
+
+template <typename T>
+inline void difference_adaptive(const std::vector<T>& left, const T* right, size_t right_len, std::vector<T>& out) {
     out.clear();
-    if (left_len == 0) return;
+    if (left.empty()) return;
     if (right_len == 0) {
-        out.assign(left, left + left_len);
+        out = left;
         return;
     }
-    out.reserve(left_len);
-    if (right_len > (left_len << 3)) {
+    
+    if (right_len > (left.size() << 3)) {
+        out.reserve(left.size());
         const T* right_end = right + right_len;
         const T* cur = right;
-        for (size_t i = 0; i < left_len; ++i) {
-            T x = left[i];
+        for (T x : left) {
             if (cur < right_end && *cur < x) {
                 size_t step = 1;
                 while (cur + step < right_end && *(cur + step) < x) {
@@ -455,34 +384,11 @@ inline void difference_slices(const T* left, size_t left_len, const T* right, si
             }
         }
     } else {
-        std::set_difference(left, left + left_len, right, right + right_len, std::back_inserter(out));
+        out.reserve(left.size());
+        std::set_difference(left.begin(), left.end(),
+                            right, right + right_len,
+                            std::back_inserter(out));
     }
-}
-
-template <typename T>
-inline void union_slices(const T* a, size_t a_len, const T* b, size_t b_len, std::vector<T>& out) {
-    out.clear();
-    if (a_len == 0 && b_len == 0) return;
-    if (a_len == 0) { out.assign(b, b + b_len); return; }
-    if (b_len == 0) { out.assign(a, a + a_len); return; }
-    out.reserve(a_len + b_len);
-    std::set_union(a, a + a_len, b, b + b_len, std::back_inserter(out));
-}
-
-inline void format_postings_direct(std::string& out_str, char* line_buf, const uint32_t* ptr, size_t len) {
-    uint64_t sum = 0;
-    for (size_t i = 0; i < len; ++i) sum += ptr[i];
-    size_t m = std::min((size_t)10, len);
-    char* p = line_buf;
-    p = fast_u64(p, len);
-    *p++ = ' ';
-    p = fast_u64(p, sum);
-    for (size_t i = 0; i < m; ++i) {
-        *p++ = ' ';
-        p = fast_u32(p, ptr[i]);
-    }
-    *p++ = '\n';
-    out_str.append(line_buf, p - line_buf);
 }
 
 struct Query {
@@ -499,8 +405,7 @@ int main(int argc, char** argv) {
     init_tables();
 
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 1);
-    mallopt(M_TRIM_THRESHOLD, 64 * 1024);
+    mallopt(M_ARENA_MAX, 2);
 #endif
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
@@ -518,6 +423,7 @@ int main(int argc, char** argv) {
     const char* qp = qmf.data;
     const char* q_limit = qmf.data + qmf.size;
 
+    // Fast zero-allocation queries parsing directly on memory-mapped file
     while (qp < q_limit) {
         while (qp < q_limit && (*qp == '\r' || *qp == '\n')) qp++;
         if (qp >= q_limit) break;
@@ -568,30 +474,24 @@ int main(int argc, char** argv) {
         queries.push_back(std::move(q));
     }
 
+
     size_t num_terms = term_table.count;
 
     std::string docs_path = data_dir + "/docs.txt";
-    RawFile rf;
-    if (!rf.open(docs_path.c_str())) return 1;
+    MappedFile mf;
+    if (!mf.open(docs_path.c_str())) return 1;
 
     const size_t num_threads = 12;
-    std::vector<size_t> split_points(num_threads + 1, 0);
-    split_points[0] = 0;
-    split_points[num_threads] = rf.size;
+    std::vector<size_t> split_points;
+    split_points.push_back(0);
 
     for (size_t i = 1; i < num_threads; ++i) {
-        size_t target = i * (rf.size / num_threads);
-        char probe[4096];
-        size_t to_probe = std::min((size_t)4096, rf.size - target);
-        ssize_t n = rf.pread_bytes(probe, to_probe, target);
-        if (n > 0) {
-            const char* nl = (const char*)std::memchr(probe, '\n', n);
-            if (nl) split_points[i] = target + (nl - probe) + 1;
-            else split_points[i] = rf.size;
-        } else {
-            split_points[i] = rf.size;
-        }
+        size_t target = i * (mf.size / num_threads);
+        const char* nl = (const char*)memchr(mf.data + target, '\n', mf.size - target);
+        if (nl) split_points.push_back((nl - mf.data) + 1);
+        else split_points.push_back(mf.size);
     }
+    split_points.push_back(mf.size);
 
     struct DocInfo {
         uint32_t doc_id;
@@ -608,243 +508,138 @@ int main(int argc, char** argv) {
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
-    // Pass 1: Streaming pread chunk parser (counting only, zero posting storage!)
+    // Pass 1: Count term frequencies and collect doc info without storing postings
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
-            size_t start = split_points[t];
-            size_t end = split_points[t + 1];
+            const char* p = mf.data + split_points[t];
+            const char* limit = mf.data + split_points[t + 1];
             auto& t_idx = thread_indices[t];
             t_idx.term_counts.assign(num_terms, 0);
-            t_idx.docs.reserve(32768);
 
             std::vector<uint32_t> term_seen(num_terms, 0);
             uint32_t cur_epoch = 1;
 
-            static constexpr size_t BUF_CAP = 1048576; // 1 MB
-            std::vector<char> io_buf(BUF_CAP + 65536);
-            size_t cur_file_pos = start;
-            size_t leftover = 0;
+            while (p < limit) {
+                const char* nl = (const char*)memchr(p, '\n', limit - p);
+                const char* line_end = nl ? nl : limit;
+                if (line_end > p && *(line_end - 1) == '\r') line_end--;
 
-            while (cur_file_pos < end || leftover > 0) {
-                if (cur_file_pos < end) {
-                    size_t read_bytes = std::min(BUF_CAP, end - cur_file_pos);
-                    ssize_t n = rf.pread_bytes(io_buf.data() + leftover, read_bytes, cur_file_pos);
-                    if (n <= 0 && leftover == 0) break;
-                    if (n > 0) {
-                        cur_file_pos += n;
-                        leftover += n;
+                const char* tab = (const char*)memchr(p, '\t', line_end - p);
+                if (tab) {
+                    uint32_t doc_id = 0;
+                    const char* cur = p;
+                    while (cur < tab && *cur >= '0' && *cur <= '9') {
+                        doc_id = doc_id * 10 + (*cur - '0');
+                        cur++;
                     }
-                }
 
-                const char* buf_start = io_buf.data();
-                const char* buf_limit = io_buf.data() + leftover;
-                const char* p = buf_start;
+                    const char* text_start = tab + 1;
+                    uint32_t text_len = (uint32_t)(line_end - text_start);
+                    uint32_t offset = (uint32_t)(text_start - mf.data);
 
-                const char* parse_limit = buf_limit;
-                if (cur_file_pos < end) {
-                    const char* last_nl = nullptr;
-                    for (const char* q = buf_limit - 1; q >= p; --q) {
-                        if (*q == '\n') { last_nl = q; break; }
+                    t_idx.docs.push_back({doc_id, offset, text_len});
+
+                    if (cur_epoch == 0xFFFFFFF0) {
+                        std::fill(term_seen.begin(), term_seen.end(), 0);
+                        cur_epoch = 1;
                     }
-                    if (last_nl) parse_limit = last_nl + 1;
-                    else break;
-                }
-
-                while (p < parse_limit) {
-                    const char* nl = (const char*)std::memchr(p, '\n', parse_limit - p);
-                    const char* line_end = nl ? nl : parse_limit;
-                    if (line_end > p && *(line_end - 1) == '\r') line_end--;
-
-                    const char* tab = (const char*)std::memchr(p, '\t', line_end - p);
-                    if (tab) {
-                        uint32_t doc_id = 0;
-                        const char* cur = p;
-                        while (cur < tab && *cur >= '0' && *cur <= '9') {
-                            doc_id = doc_id * 10 + (*cur - '0');
-                            cur++;
-                        }
-
-                        const char* text_start = tab + 1;
-                        uint32_t text_len = (uint32_t)(line_end - text_start);
-                        uint32_t offset = (uint32_t)((cur_file_pos - leftover) + (text_start - buf_start));
-
-                        t_idx.docs.push_back({doc_id, offset, text_len});
-
-                        if (cur_epoch == 0xFFFFFFF0) {
-                            std::fill(term_seen.begin(), term_seen.end(), 0);
-                            cur_epoch = 1;
-                        }
-                        const char* tp = text_start;
+                    const char* tp = text_start;
+                    while (tp < line_end) {
+                        while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
+                        if (tp >= line_end) break;
+                        const char* w_start = tp;
+                        uint64_t h = 0xcbf29ce484222325ULL;
                         while (tp < line_end) {
-                            while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
-                            if (tp >= line_end) break;
-                            const char* w_start = tp;
-                            uint64_t h = 0xcbf29ce484222325ULL;
-                            while (tp < line_end) {
-                                uint8_t ch = CHAR_MAP[(uint8_t)*tp];
-                                if (ch == 0) break;
-                                h = (h ^ ch) * 0x100000001b3ULL;
-                                tp++;
-                            }
-                            size_t w_len = tp - w_start;
-
-                            uint32_t bit_idx = (uint32_t)(h ^ (h >> 32)) & 262143;
-                            if ((TERM_FILTER[bit_idx >> 6] & (1ULL << (bit_idx & 63))) != 0) {
-                                int term_id = term_table.find(w_start, w_len, h);
-                                if (term_id != -1) {
-                                    if (term_seen[term_id] != cur_epoch) {
-                                        term_seen[term_id] = cur_epoch;
-                                        t_idx.term_counts[term_id]++;
-                                    }
-                                }
+                            uint8_t ch = CHAR_MAP[(uint8_t)*tp];
+                            if (ch == 0) break;
+                            h = (h ^ ch) * 0x100000001b3ULL;
+                            tp++;
+                        }
+                        size_t w_len = tp - w_start;
+                        int term_id = term_table.find(w_start, w_len, h);
+                        if (term_id != -1) {
+                            if (term_seen[term_id] != cur_epoch) {
+                                term_seen[term_id] = cur_epoch;
+                                t_idx.term_counts[term_id]++;
                             }
                         }
-                        cur_epoch++;
                     }
-                    p = nl ? nl + 1 : parse_limit;
+                    cur_epoch++;
                 }
-
-                size_t consumed = p - buf_start;
-                leftover -= consumed;
-                if (leftover > 0 && consumed > 0) {
-                    std::memmove(io_buf.data(), buf_start + consumed, leftover);
-                }
+                p = nl ? nl + 1 : limit;
             }
         });
     }
 
     for (auto& th : threads) th.join();
 
-    // Advise kernel to drop Pass 1 pages from cache
-    rf.advise_dontneed();
-
     // Compute global term offsets and thread partition offsets
     std::vector<uint32_t> term_offsets(num_terms + 1, 0);
-    std::vector<uint32_t> thread_start(num_threads * num_terms, 0);
+    std::vector<std::vector<uint32_t>> thread_start(num_threads, std::vector<uint32_t>(num_terms));
 
     for (size_t term_id = 0; term_id < num_terms; ++term_id) {
         uint32_t cur = term_offsets[term_id];
         for (size_t t = 0; t < num_threads; ++t) {
-            thread_start[t * num_terms + term_id] = cur;
+            thread_start[t][term_id] = cur;
             cur += thread_indices[t].term_counts[term_id];
         }
         term_offsets[term_id + 1] = cur;
     }
 
-    // Free term_counts from thread_indices
+    // Free thread term_counts now
     for (size_t t = 0; t < num_threads; ++t) {
-        std::vector<uint32_t>().swap(thread_indices[t].term_counts);
+        thread_indices[t].term_counts.clear();
+        thread_indices[t].term_counts.shrink_to_fit();
     }
 
     uint32_t total_postings = term_offsets[num_terms];
     std::vector<uint32_t> postings_data(total_postings);
 
-    // Pass 2: High-throughput 1MB buffered streaming direct scatter (0 extra memory!)
+    // Pass 2: Directly scatter into postings_data using doc list from Pass 1
     threads.clear();
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
-            size_t start = split_points[t];
-            size_t end = split_points[t + 1];
-            uint32_t* starts = &thread_start[t * num_terms];
+            auto& starts = thread_start[t];
+            const auto& my_docs = thread_indices[t].docs;
 
             std::vector<uint32_t> term_seen(num_terms, 0);
             uint32_t cur_epoch = 1;
 
-            static constexpr size_t BUF_CAP = 1048576; // 1 MB
-            std::vector<char> io_buf(BUF_CAP + 65536);
-            size_t cur_file_pos = start;
-            size_t leftover = 0;
+            for (const auto& d : my_docs) {
+                uint32_t doc_id = d.doc_id;
+                const char* tp = mf.data + d.offset;
+                const char* line_end = tp + d.len;
 
-            while (cur_file_pos < end || leftover > 0) {
-                if (cur_file_pos < end) {
-                    size_t read_bytes = std::min(BUF_CAP, end - cur_file_pos);
-                    ssize_t n = rf.pread_bytes(io_buf.data() + leftover, read_bytes, cur_file_pos);
-                    if (n <= 0 && leftover == 0) break;
-                    if (n > 0) {
-                        cur_file_pos += n;
-                        leftover += n;
+                if (cur_epoch == 0xFFFFFFF0) {
+                    std::fill(term_seen.begin(), term_seen.end(), 0);
+                    cur_epoch = 1;
+                }
+                while (tp < line_end) {
+                    while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
+                    if (tp >= line_end) break;
+                    const char* w_start = tp;
+                    uint64_t h = 0xcbf29ce484222325ULL;
+                    while (tp < line_end) {
+                        uint8_t ch = CHAR_MAP[(uint8_t)*tp];
+                        if (ch == 0) break;
+                        h = (h ^ ch) * 0x100000001b3ULL;
+                        tp++;
+                    }
+                    size_t w_len = tp - w_start;
+                    int term_id = term_table.find(w_start, w_len, h);
+                    if (term_id != -1) {
+                        if (term_seen[term_id] != cur_epoch) {
+                            term_seen[term_id] = cur_epoch;
+                            uint32_t slot = starts[term_id]++;
+                            postings_data[slot] = doc_id;
+                        }
                     }
                 }
-
-                const char* buf_start = io_buf.data();
-                const char* buf_limit = io_buf.data() + leftover;
-                const char* p = buf_start;
-
-                const char* parse_limit = buf_limit;
-                if (cur_file_pos < end) {
-                    const char* last_nl = nullptr;
-                    for (const char* q = buf_limit - 1; q >= p; --q) {
-                        if (*q == '\n') { last_nl = q; break; }
-                    }
-                    if (last_nl) parse_limit = last_nl + 1;
-                    else break;
-                }
-
-                while (p < parse_limit) {
-                    const char* nl = (const char*)std::memchr(p, '\n', parse_limit - p);
-                    const char* line_end = nl ? nl : parse_limit;
-                    if (line_end > p && *(line_end - 1) == '\r') line_end--;
-
-                    const char* tab = (const char*)std::memchr(p, '\t', line_end - p);
-                    if (tab) {
-                        uint32_t doc_id = 0;
-                        const char* cur = p;
-                        while (cur < tab && *cur >= '0' && *cur <= '9') {
-                            doc_id = doc_id * 10 + (*cur - '0');
-                            cur++;
-                        }
-
-                        const char* text_start = tab + 1;
-                        if (cur_epoch == 0xFFFFFFF0) {
-                            std::fill(term_seen.begin(), term_seen.end(), 0);
-                            cur_epoch = 1;
-                        }
-                        const char* tp = text_start;
-                        while (tp < line_end) {
-                            while (tp < line_end && CHAR_MAP[(uint8_t)*tp] == 0) tp++;
-                            if (tp >= line_end) break;
-                            const char* w_start = tp;
-                            uint64_t h = 0xcbf29ce484222325ULL;
-                            while (tp < line_end) {
-                                uint8_t ch = CHAR_MAP[(uint8_t)*tp];
-                                if (ch == 0) break;
-                                h = (h ^ ch) * 0x100000001b3ULL;
-                                tp++;
-                            }
-                            size_t w_len = tp - w_start;
-
-                            uint32_t bit_idx = (uint32_t)(h ^ (h >> 32)) & 262143;
-                            if ((TERM_FILTER[bit_idx >> 6] & (1ULL << (bit_idx & 63))) != 0) {
-                                int term_id = term_table.find(w_start, w_len, h);
-                                if (term_id != -1) {
-                                    if (term_seen[term_id] != cur_epoch) {
-                                        term_seen[term_id] = cur_epoch;
-                                        uint32_t slot = starts[term_id]++;
-                                        postings_data[slot] = doc_id;
-                                    }
-                                }
-                            }
-                        }
-                        cur_epoch++;
-                    }
-                    p = nl ? nl + 1 : parse_limit;
-                }
-
-                size_t consumed = p - buf_start;
-                leftover -= consumed;
-                if (leftover > 0 && consumed > 0) {
-                    std::memmove(io_buf.data(), buf_start + consumed, leftover);
-                }
+                cur_epoch++;
             }
         });
     }
     for (auto& th : threads) th.join();
-
-    // Advise kernel to drop Pass 2 pages from cache
-    rf.advise_dontneed();
-
-    thread_start.clear();
-    thread_start.shrink_to_fit();
 
     uint32_t max_doc_id = 0;
     for (size_t t = 0; t < num_threads; ++t) {
@@ -864,9 +659,11 @@ int main(int argc, char** argv) {
 
     thread_indices.clear();
     thread_indices.shrink_to_fit();
+    thread_start.clear();
+    thread_start.shrink_to_fit();
 
 #ifndef _WIN32
-    malloc_trim(0);
+    madvise((void*)mf.data, mf.size, MADV_DONTNEED);
 #endif
 
     auto get_postings = [&](int term_id) -> std::pair<const uint32_t*, size_t> {
@@ -907,44 +704,19 @@ int main(int argc, char** argv) {
                         if (len0 == 0) {
                             out_str.append("0 0\n", 4);
                         } else {
-                            format_postings_direct(out_str, line_buf, ptr0, len0);
-                        }
-                        continue;
-                    }
-
-                    if (q.bool_terms.size() == 2) {
-                        auto [ptr0, len0] = get_postings(q.bool_terms[0]);
-                        auto [ptr1, len1] = get_postings(q.bool_terms[1]);
-                        BoolOp op = q.bool_ops[0];
-                        if (op == OP_AND) {
-                            if (len0 == 0 || len1 == 0) {
-                                out_str.append("0 0\n", 4);
-                            } else {
-                                intersect_slices(ptr0, len0, ptr1, len1, cur_res);
-                                if (cur_res.empty()) out_str.append("0 0\n", 4);
-                                else format_postings_direct(out_str, line_buf, cur_res.data(), cur_res.size());
+                            uint64_t sum = 0;
+                            for (size_t i = 0; i < len0; ++i) sum += ptr0[i];
+                            size_t m = std::min((size_t)10, len0);
+                            char* p = line_buf;
+                            p = fast_u64(p, len0);
+                            *p++ = ' ';
+                            p = fast_u64(p, sum);
+                            for (size_t i = 0; i < m; ++i) {
+                                *p++ = ' ';
+                                p = fast_u32(p, ptr0[i]);
                             }
-                        } else if (op == OP_OR) {
-                            if (len0 == 0 && len1 == 0) {
-                                out_str.append("0 0\n", 4);
-                            } else if (len0 == 0) {
-                                format_postings_direct(out_str, line_buf, ptr1, len1);
-                            } else if (len1 == 0) {
-                                format_postings_direct(out_str, line_buf, ptr0, len0);
-                            } else {
-                                union_slices(ptr0, len0, ptr1, len1, cur_res);
-                                format_postings_direct(out_str, line_buf, cur_res.data(), cur_res.size());
-                            }
-                        } else if (op == OP_NOT) {
-                            if (len0 == 0) {
-                                out_str.append("0 0\n", 4);
-                            } else if (len1 == 0) {
-                                format_postings_direct(out_str, line_buf, ptr0, len0);
-                            } else {
-                                difference_slices(ptr0, len0, ptr1, len1, cur_res);
-                                if (cur_res.empty()) out_str.append("0 0\n", 4);
-                                else format_postings_direct(out_str, line_buf, cur_res.data(), cur_res.size());
-                            }
+                            *p++ = '\n';
+                            out_str.append(line_buf, p - line_buf);
                         }
                         continue;
                     }
@@ -1000,13 +772,16 @@ int main(int argc, char** argv) {
                                     if (cur_res.empty()) {
                                         cur_res.assign(ptr_rhs, ptr_rhs + len_rhs);
                                     } else {
-                                        union_slices(cur_res.data(), cur_res.size(), ptr_rhs, len_rhs, temp);
+                                        temp.clear();
+                                        std::set_union(cur_res.begin(), cur_res.end(),
+                                                       ptr_rhs, ptr_rhs + len_rhs,
+                                                       std::back_inserter(temp));
                                         cur_res.swap(temp);
                                     }
                                 }
                             } else if (op == OP_NOT) {
                                 if (len_rhs > 0 && !cur_res.empty()) {
-                                    difference_slices(cur_res.data(), cur_res.size(), ptr_rhs, len_rhs, temp);
+                                    difference_adaptive(cur_res, ptr_rhs, len_rhs, temp);
                                     cur_res.swap(temp);
                                 }
                             }
@@ -1032,25 +807,17 @@ int main(int argc, char** argv) {
                         continue;
                     }
 
-                    char phrase_buf[8192];
-                    auto check_doc_phrase = [&](uint32_t doc_id) -> bool {
-                        uint32_t off = doc_offsets[doc_id];
-                        uint32_t ln = doc_lens[doc_id];
-                        if (ln <= sizeof(phrase_buf)) {
-                            rf.pread_bytes(phrase_buf, ln, off);
-                            return match_phrase_fast(phrase_buf, ln, q.phrase_terms);
-                        } else {
-                            std::vector<char> big_buf(ln);
-                            rf.pread_bytes(big_buf.data(), ln, off);
-                            return match_phrase_fast(big_buf.data(), ln, q.phrase_terms);
-                        }
-                    };
-
                     if (num_pt == 1) {
-                        for (size_t i = 0; i < len0; ++i) {
-                            uint32_t doc_id = ptr0[i];
-                            if (check_doc_phrase(doc_id)) cur_res.push_back(doc_id);
+                        temp.clear();
+                        for (size_t di = 0; di < len0; ++di) {
+                            uint32_t doc_id = ptr0[di];
+                            uint32_t off = doc_offsets[doc_id];
+                            uint32_t ln = doc_lens[doc_id];
+                            if (match_phrase_fast(mf.data + off, ln, q.phrase_terms)) {
+                                temp.push_back(doc_id);
+                            }
                         }
+                        cur_res.swap(temp);
                     } else {
                         auto [ptr1, len1] = get_postings(sorted_pterms[1]);
                         if (len1 == 0) {
@@ -1067,14 +834,15 @@ int main(int argc, char** argv) {
                         }
 
                         if (!cur_res.empty()) {
-                            size_t write_idx = 0;
-                            for (size_t i = 0; i < cur_res.size(); ++i) {
-                                uint32_t doc_id = cur_res[i];
-                                if (check_doc_phrase(doc_id)) {
-                                    cur_res[write_idx++] = doc_id;
+                            temp.clear();
+                            for (uint32_t doc_id : cur_res) {
+                                uint32_t off = doc_offsets[doc_id];
+                                uint32_t ln = doc_lens[doc_id];
+                                if (match_phrase_fast(mf.data + off, ln, q.phrase_terms)) {
+                                    temp.push_back(doc_id);
                                 }
                             }
-                            cur_res.resize(write_idx);
+                            cur_res.swap(temp);
                         }
                     }
                 }
@@ -1082,7 +850,21 @@ int main(int argc, char** argv) {
                 if (cur_res.empty()) {
                     out_str.append("0 0\n", 4);
                 } else {
-                    format_postings_direct(out_str, line_buf, cur_res.data(), cur_res.size());
+                    size_t cnt = cur_res.size();
+                    uint64_t sum = 0;
+                    for (uint32_t d : cur_res) sum += d;
+                    size_t m = std::min((size_t)10, cnt);
+
+                    char* p = line_buf;
+                    p = fast_u64(p, cnt);
+                    *p++ = ' ';
+                    p = fast_u64(p, sum);
+                    for (size_t i = 0; i < m; ++i) {
+                        *p++ = ' ';
+                        p = fast_u32(p, cur_res[i]);
+                    }
+                    *p++ = '\n';
+                    out_str.append(line_buf, p - line_buf);
                 }
             }
         });
@@ -1094,8 +876,8 @@ int main(int argc, char** argv) {
     FILE* fp = fopen(out_path.c_str(), "wb");
     if (!fp) return 1;
 
-    char write_buf[1048576];
-    setvbuf(fp, write_buf, _IOFBF, sizeof(write_buf));
+    char out_buf[1048576];
+    setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
 
     for (size_t t = 0; t < num_threads; ++t) {
         if (!thread_outputs[t].empty()) {
@@ -1103,6 +885,7 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
+
 
     return 0;
 }

@@ -52,7 +52,7 @@ struct MappedFile {
         if (fstat(fd, &st) < 0) { ::close(fd); return false; }
         size = st.st_size;
         if (size == 0) return true;
-        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
         return data != MAP_FAILED;
 #endif
     }
@@ -457,6 +457,7 @@ int main(int argc, char** argv) {
     }
 
     std::barrier sync_point(num_threads);
+    std::barrier sync_point2(num_threads);
     std::vector<std::string> thread_outputs(num_threads);
     std::vector<std::vector<CountryStats>> thread_stats(num_threads, std::vector<CountryStats>(num_countries));
     std::vector<std::vector<uint64_t>> thread_hashes(num_threads);
@@ -478,9 +479,6 @@ int main(int argc, char** argv) {
 
                 const char* p = mf.data + start;
                 const char* limit = mf.data + end;
-#ifndef _WIN32
-                const char* last_advise = p;
-#endif
 
                 if (t == 0) {
                     if (limit - p >= 3 && (unsigned char)p[0] == 0xef && (unsigned char)p[1] == 0xbb && (unsigned char)p[2] == 0xbf) {
@@ -520,28 +518,7 @@ int main(int argc, char** argv) {
 
                     name_entries.push_back({cid, name_hash});
                     c_counts[cid]++;
-
-#ifndef _WIN32
-                    if (__builtin_expect((size_t)(p - last_advise) >= 262144, 0)) {
-                        uintptr_t adv_start = (uintptr_t)last_advise & ~4095ULL;
-                        uintptr_t adv_end = (uintptr_t)p & ~4095ULL;
-                        if (adv_end > adv_start) {
-                            madvise((void*)adv_start, adv_end - adv_start, MADV_DONTNEED);
-                        }
-                        last_advise = p;
-                    }
-#endif
                 }
-
-#ifndef _WIN32
-                if (p > last_advise) {
-                    uintptr_t adv_start = (uintptr_t)last_advise & ~4095ULL;
-                    uintptr_t adv_end = ((uintptr_t)p + 4095ULL) & ~4095ULL;
-                    if (adv_end > adv_start) {
-                        madvise((void*)adv_start, adv_end - adv_start, MADV_DONTNEED);
-                    }
-                }
-#endif
 
                 // Partition name_entries by country via ultra-fast 1-pass counting sort
                 auto& offsets = thread_offsets[t];
@@ -558,13 +535,16 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Barrier: Wait for all threads to finish Phase 1 parse & counting sort
+            // Barrier 1: Wait for all threads to finish Phase 1 parse & counting sort
             sync_point.arrive_and_wait();
 
             // Thread 0 unmaps records.csv to drop RSS before reduction phase
             if (t == 0) {
                 mf.close();
             }
+
+            // Barrier 2: Wait for Thread 0 unmap
+            sync_point2.arrive_and_wait();
 
             // Phase 2: Parallel country reduction directly in the same thread
             size_t c_start = t * c_chunk;
