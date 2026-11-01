@@ -190,6 +190,10 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         td.hour_records[h].reserve(est_per_hour);
     }
 
+    const char* mru_ptr[2] = {nullptr, nullptr};
+    size_t mru_len[2] = {0, 0};
+    int mru_eid[2] = {-1, -1};
+
     while (p < limit) {
         if (*p == '\r' || *p == '\n') { p++; continue; }
         if (limit - p < 35) break;
@@ -224,9 +228,18 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         if (!ep_end) break;
 
         size_t ep_len = ep_end - ep_start;
-        int eid = td.ep_map.get_or_insert(ep_start, ep_len);
-        if (eid >= (int)td.endpoints.size()) {
-            td.endpoints.emplace_back(ep_start, ep_len);
+        int eid = -1;
+        if (ep_len == mru_len[0] && std::memcmp(ep_start, mru_ptr[0], ep_len) == 0) {
+            eid = mru_eid[0];
+        } else if (ep_len == mru_len[1] && std::memcmp(ep_start, mru_ptr[1], ep_len) == 0) {
+            eid = mru_eid[1];
+        } else {
+            eid = td.ep_map.get_or_insert(ep_start, ep_len);
+            if (eid >= (int)td.endpoints.size()) {
+                td.endpoints.emplace_back(ep_start, ep_len);
+            }
+            mru_ptr[1] = mru_ptr[0]; mru_len[1] = mru_len[0]; mru_eid[1] = mru_eid[0];
+            mru_ptr[0] = ep_start;   mru_len[0] = ep_len;     mru_eid[0] = eid;
         }
 
         // Status

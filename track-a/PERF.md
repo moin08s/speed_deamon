@@ -33,3 +33,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 26 | In-place parallel endpoint global ID remapping + elimination of remap_eid array lookup in reduction loops | run-31f4a65654a3 | 0.077 | 39 | 65.69 |
 | 27 | Single flat entry buffer per thread + in-memory parallel counting sort + contiguous lat_pool scatter | run-ab2d69133b7c | 0.106 | 59 | 60.42 |
 | 28 | Restored streaming hour-partitioned reduction with in-flight capacity reclamation | run-af0a37b2ae54 | 0.076 | 39 | 65.99 |
+| 29 | 2-entry thread-local MRU endpoint cache (bypasses hash computation on repeated routes) | pending | | | |
