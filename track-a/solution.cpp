@@ -9,12 +9,12 @@
 #include <cstdio>
 #include <atomic>
 #include <mutex>
+#include <chrono>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <intrin.h>
 #else
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -22,42 +22,7 @@
 #include <x86intrin.h>
 #endif
 
-struct MappedFile {
-    const char* data = nullptr;
-    size_t size = 0;
-#ifdef _WIN32
-    HANDLE hFile = INVALID_HANDLE_VALUE, hMap = NULL;
-    bool open(const char* p) {
-        hFile = CreateFileA(p, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile == INVALID_HANDLE_VALUE) return false;
-        LARGE_INTEGER li; GetFileSizeEx(hFile, &li); size = li.QuadPart;
-        if (!size) return true;
-        hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-        if (!hMap) { CloseHandle(hFile); return false; }
-        data = (const char*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, size);
-        return data != nullptr;
-    }
-    void close() {
-        if (data) { UnmapViewOfFile(data); data = nullptr; }
-        if (hMap) { CloseHandle(hMap); hMap = NULL; }
-        if (hFile != INVALID_HANDLE_VALUE) { CloseHandle(hFile); hFile = INVALID_HANDLE_VALUE; }
-    }
-#else
-    int fd = -1;
-    bool open(const char* p) {
-        fd = ::open(p, O_RDONLY); if (fd < 0) return false;
-        struct stat st; if (fstat(fd, &st) < 0) { ::close(fd); return false; }
-        size = st.st_size; if (!size) return true;
-        data = (const char*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
-        return data != MAP_FAILED;
-    }
-    void close() {
-        if (data && data != MAP_FAILED) { munmap((void*)data, size); data = nullptr; }
-        if (fd >= 0) { ::close(fd); fd = -1; }
-    }
-#endif
-    ~MappedFile() { close(); }
-};
+using namespace std::chrono;
 
 static const char* const GLOBAL_HOURS[72] = {
     "2026-10-30T18:00:00Z", "2026-10-30T19:00:00Z", "2026-10-30T20:00:00Z",
@@ -98,11 +63,13 @@ struct AtomicEndpointMap {
     struct Entry {
         std::atomic<uint64_t> hash{0};
         uint32_t len{0};
-        const char* str{nullptr};
+        uint32_t storage_off{0};
         int id{-1};
     };
     Entry entries[CAPACITY];
     std::atomic<int> count{0};
+    char ep_storage[131072];
+    std::atomic<size_t> storage_used{0};
     std::string_view id_to_ep[2500];
     std::mutex insert_mutex;
 
@@ -116,10 +83,14 @@ struct AtomicEndpointMap {
                 eh = entries[idx].hash.load(std::memory_order_relaxed);
                 if (eh == 0) {
                     int new_id = count.fetch_add(1, std::memory_order_relaxed);
+                    size_t off = storage_used.load(std::memory_order_relaxed);
+                    std::memcpy(ep_storage + off, s, len);
+                    storage_used.store(off + len, std::memory_order_relaxed);
+
                     entries[idx].len = (uint32_t)len;
-                    entries[idx].str = s;
+                    entries[idx].storage_off = (uint32_t)off;
                     entries[idx].id = new_id;
-                    id_to_ep[new_id] = std::string_view(s, len);
+                    id_to_ep[new_id] = std::string_view(ep_storage + off, len);
                     entries[idx].hash.store(h, std::memory_order_release);
                     return new_id;
                 }
@@ -140,14 +111,40 @@ struct ThreadParseData {
     std::vector<RawRecord> hour_records[72];
 };
 
-void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td) {
-    const char* p = buf + start, *limit = buf + end;
-    size_t chunk_bytes = end - start;
-    size_t est_per_hour = (chunk_bytes / 50) / 72 + 64;
-    for (size_t h = 0; h < 72; ++h) td.hour_records[h].reserve(est_per_hour);
+static const char DIGITS_100[200] = {
+    '0','0','0','1','0','2','0','3','0','4','0','5','0','6','0','7','0','8','0','9',
+    '1','0','1','1','1','2','1','3','1','4','1','5','1','6','1','7','1','8','1','9',
+    '2','0','2','1','2','2','2','3','2','4','2','5','2','6','2','7','2','8','2','9',
+    '3','0','3','1','3','2','3','3','3','4','3','5','3','6','3','7','3','8','3','9',
+    '4','0','4','1','4','2','4','3','4','4','4','5','4','6','4','7','4','8','4','9',
+    '5','0','5','1','5','2','5','3','5','4','5','5','5','6','5','7','5','8','5','9',
+    '6','0','6','1','6','2','6','3','6','4','6','5','6','6','6','7','6','8','6','9',
+    '7','0','7','1','7','2','7','3','7','4','7','5','7','6','7','7','7','8','7','9',
+    '8','0','8','1','8','2','8','3','8','4','8','5','8','6','8','7','8','8','8','9',
+    '9','0','9','1','9','2','9','3','9','4','9','5','9','6','9','7','9','8','9','9'
+};
 
-    uint32_t last_tag = 0, cur_hid = 0;
+inline char* fast_u32(char* p, uint32_t val) {
+    if (val < 10) { *p++ = (char)('0' + val); return p; }
+    char buf[12]; int len = 0;
+    while (val >= 100) {
+        uint32_t rem = val % 100;
+        val /= 100;
+        buf[len++] = DIGITS_100[rem * 2 + 1];
+        buf[len++] = DIGITS_100[rem * 2];
+    }
+    if (val < 10) {
+        buf[len++] = (char)('0' + val);
+    } else {
+        buf[len++] = DIGITS_100[val * 2 + 1];
+        buf[len++] = DIGITS_100[val * 2];
+    }
+    for (int i = len - 1; i >= 0; --i) *p++ = buf[i];
+    return p;
+}
 
+void parse_lines(const char* buf, size_t len, ThreadParseData& td, uint32_t& last_tag, uint32_t& cur_hid) {
+    const char* p = buf, *limit = buf + len;
     while (p < limit) {
         if (*p == '\r' || *p == '\n') { p++; continue; }
         if (limit - p < 35) break;
@@ -206,36 +203,71 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
     }
 }
 
-static const char DIGITS_100[200] = {
-    '0','0','0','1','0','2','0','3','0','4','0','5','0','6','0','7','0','8','0','9',
-    '1','0','1','1','1','2','1','3','1','4','1','5','1','6','1','7','1','8','1','9',
-    '2','0','2','1','2','2','2','3','2','4','2','5','2','6','2','7','2','8','2','9',
-    '3','0','3','1','3','2','3','3','3','4','3','5','3','6','3','7','3','8','3','9',
-    '4','0','4','1','4','2','4','3','4','4','4','5','4','6','4','7','4','8','4','9',
-    '5','0','5','1','5','2','5','3','5','4','5','5','5','6','5','7','5','8','5','9',
-    '6','0','6','1','6','2','6','3','6','4','6','5','6','6','6','7','6','8','6','9',
-    '7','0','7','1','7','2','7','3','7','4','7','5','7','6','7','7','7','8','7','9',
-    '8','0','8','1','8','2','8','3','8','4','8','5','8','6','8','7','8','8','8','9',
-    '9','0','9','1','9','2','9','3','9','4','9','5','9','6','9','7','9','8','9','9'
-};
+void stream_worker(const std::string& in_path, size_t start, size_t end, ThreadParseData& td) {
+    constexpr size_t BUF_CAP = 262144;
+    std::vector<char> io_buf(BUF_CAP + 4096);
+    size_t chunk_bytes = end - start;
+    size_t est_per_hour = (chunk_bytes / 50) / 72 + 64;
+    for (size_t h = 0; h < 72; ++h) td.hour_records[h].reserve(est_per_hour);
 
-inline char* fast_u32(char* p, uint32_t val) {
-    if (val < 10) { *p++ = (char)('0' + val); return p; }
-    char buf[12]; int len = 0;
-    while (val >= 100) {
-        uint32_t rem = val % 100;
-        val /= 100;
-        buf[len++] = DIGITS_100[rem * 2 + 1];
-        buf[len++] = DIGITS_100[rem * 2];
+    uint32_t last_tag = 0, cur_hid = 0;
+
+#ifdef _WIN32
+    HANDLE hFile = CreateFileA(in_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+    LARGE_INTEGER li; li.QuadPart = start;
+    SetFilePointerEx(hFile, li, NULL, FILE_BEGIN);
+#else
+    int fd = ::open(in_path.c_str(), O_RDONLY);
+    if (fd < 0) return;
+#endif
+
+    size_t cur_file_offset = start;
+    size_t leftover_len = 0;
+
+    while (cur_file_offset < end || leftover_len > 0) {
+        size_t to_read = std::min(BUF_CAP - leftover_len, end > cur_file_offset ? end - cur_file_offset : 0);
+        size_t bytes_read = 0;
+        if (to_read > 0) {
+#ifdef _WIN32
+            DWORD br = 0;
+            ReadFile(hFile, io_buf.data() + leftover_len, (DWORD)to_read, &br, NULL);
+            bytes_read = br;
+#else
+            ssize_t ret = ::pread(fd, io_buf.data() + leftover_len, to_read, cur_file_offset);
+            bytes_read = (ret > 0) ? (size_t)ret : 0;
+#endif
+            cur_file_offset += bytes_read;
+        }
+
+        size_t total_buf_len = leftover_len + bytes_read;
+        if (total_buf_len == 0) break;
+
+        // Find last newline in buffer if we are not at end
+        size_t parseable_len = total_buf_len;
+        if (cur_file_offset < end) {
+            const char* buf_end = io_buf.data() + total_buf_len;
+            const char* last_nl = nullptr;
+            for (const char* ptr = io_buf.data() + total_buf_len - 1; ptr >= io_buf.data(); --ptr) {
+                if (*ptr == '\n') { last_nl = ptr; break; }
+            }
+            if (last_nl) parseable_len = (last_nl - io_buf.data()) + 1;
+            else break; // No newline found in chunk
+        }
+
+        parse_lines(io_buf.data(), parseable_len, td, last_tag, cur_hid);
+
+        leftover_len = total_buf_len - parseable_len;
+        if (leftover_len > 0) {
+            std::memmove(io_buf.data(), io_buf.data() + parseable_len, leftover_len);
+        }
     }
-    if (val < 10) {
-        buf[len++] = (char)('0' + val);
-    } else {
-        buf[len++] = DIGITS_100[val * 2 + 1];
-        buf[len++] = DIGITS_100[val * 2];
-    }
-    for (int i = len - 1; i >= 0; --i) *p++ = buf[i];
-    return p;
+
+#ifdef _WIN32
+    CloseHandle(hFile);
+#else
+    ::close(fd);
+#endif
 }
 
 int main(int argc, char** argv) {
@@ -247,24 +279,60 @@ int main(int argc, char** argv) {
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
     std::string out_dir = (argc > 2) ? argv[2] : "/out";
+    std::string in_path = data_dir + "/requests.log";
 
-    MappedFile mf;
-    if (!mf.open((data_dir + "/requests.log").c_str())) return 1;
-    if (!mf.size) { fclose(fopen((out_dir + "/summary.txt").c_str(), "wb")); return 0; }
+    size_t file_size = 0;
+#ifdef _WIN32
+    HANDLE hCheck = CreateFileA(in_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hCheck == INVALID_HANDLE_VALUE) return 1;
+    LARGE_INTEGER li; GetFileSizeEx(hCheck, &li); file_size = li.QuadPart;
+#else
+    int fd = ::open(in_path.c_str(), O_RDONLY);
+    if (fd < 0) return 1;
+    struct stat st; if (fstat(fd, &st) < 0) { ::close(fd); return 1; }
+    file_size = st.st_size;
+#endif
+
+    if (!file_size) {
+        fclose(fopen((out_dir + "/summary.txt").c_str(), "wb"));
+#ifdef _WIN32
+        CloseHandle(hCheck);
+#else
+        ::close(fd);
+#endif
+        return 0;
+    }
 
     const size_t num_threads = 12;
     std::vector<size_t> splits(num_threads + 1, 0);
-    splits[num_threads] = mf.size;
+    splits[num_threads] = file_size;
+
     for (size_t i = 1; i < num_threads; ++i) {
-        size_t target = i * (mf.size / num_threads);
-        const char* nl = (const char*)std::memchr(mf.data + target, '\n', mf.size - target);
-        splits[i] = nl ? (nl - mf.data + 1) : mf.size;
+        size_t target = i * (file_size / num_threads);
+        char probe[4096];
+#ifdef _WIN32
+        LARGE_INTEGER pos; pos.QuadPart = target;
+        SetFilePointerEx(hCheck, pos, NULL, FILE_BEGIN);
+        DWORD br = 0;
+        ReadFile(hCheck, probe, sizeof(probe), &br, NULL);
+        size_t bytes_read = br;
+#else
+        ssize_t ret = ::pread(fd, probe, sizeof(probe), target);
+        size_t bytes_read = (ret > 0) ? (size_t)ret : 0;
+#endif
+        const char* nl = (const char*)std::memchr(probe, '\n', bytes_read);
+        splits[i] = nl ? (target + (nl - probe + 1)) : target;
     }
+#ifdef _WIN32
+    CloseHandle(hCheck);
+#else
+    ::close(fd);
+#endif
 
     std::vector<ThreadParseData> parse_data(num_threads);
     std::vector<std::thread> threads; threads.reserve(num_threads);
     for (size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&, t]() { parse_chunk(mf.data, splits[t], splits[t + 1], parse_data[t]); });
+        threads.emplace_back([&, t]() { stream_worker(in_path, splits[t], splits[t + 1], parse_data[t]); });
     }
     for (auto& th : threads) th.join();
 
@@ -281,21 +349,12 @@ int main(int argc, char** argv) {
         old_to_new[sorted_order[new_id]] = (uint16_t)new_id;
     }
 
-    size_t pool_bytes = 0;
-    for (int i = 0; i < num_eps; ++i) pool_bytes += GLOBAL_EP_MAP.id_to_ep[i].size();
-
-    std::string ep_pool;
-    ep_pool.reserve(pool_bytes + 16);
     std::vector<std::string_view> global_endpoints(num_eps);
     for (int new_id = 0; new_id < num_eps; ++new_id) {
         int old_id = sorted_order[new_id];
-        std::string_view sv = GLOBAL_EP_MAP.id_to_ep[old_id];
-        size_t off = ep_pool.size();
-        ep_pool.append(sv.data(), sv.size());
-        global_endpoints[new_id] = std::string_view(ep_pool.data() + off, sv.size());
+        global_endpoints[new_id] = GLOBAL_EP_MAP.id_to_ep[old_id];
     }
 
-    mf.close();
 #ifndef _WIN32
     malloc_trim(0);
 #endif
