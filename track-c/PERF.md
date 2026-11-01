@@ -40,4 +40,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 33 | Restored proven parallel country hash deduplication from commit 05b3c62 | run-1791ba7ce50a | 0.104 | 48.8 | 56.74 |
 | 34 | Parallel country deduplication consistency | run-33e52fda228b | 0.102 | 48.6 | 56.95 |
 | 35 | Parallel country deduplication run consistency | run-02d8d38563ff | 0.104 | 48.5 | 56.77 |
-| 36 | Hardware CRC32 name hashing + single-launch persistent thread barrier + sequential split points | pending | pending | pending | pending |
+| 36 | Hardware CRC32 name hashing + single-launch persistent thread barrier + sequential split points | run-3cb0627f62c9 | 0.101 | 49.6 | 56.71 |

@@ -104,15 +104,18 @@ inline char* fast_i64(char* p, int64_t val) {
     return p;
 }
 
+struct Edge {
+    uint32_t dst;
+    uint32_t w;
+};
+
 struct CSRGraph {
     uint32_t n = 0;
     uint32_t m = 0;
     std::vector<uint32_t> fwd_head;
-    std::vector<uint32_t> fwd_dst;
-    std::vector<uint32_t> fwd_w;
+    std::vector<Edge> fwd_edges;
     std::vector<uint32_t> bwd_head;
-    std::vector<uint32_t> bwd_dst;
-    std::vector<uint32_t> bwd_w;
+    std::vector<Edge> bwd_edges;
 };
 
 void load_graph(const char* path, CSRGraph& g) {
@@ -125,7 +128,7 @@ void load_graph(const char* path, CSRGraph& g) {
     g.n = parse_uint(p, limit);
     g.m = parse_uint(p, limit);
 
-    const size_t num_threads = 8;
+    const size_t num_threads = 6;
 
     // Advance p to first edge line
     while (p < limit && *p != '\n') p++;
@@ -174,47 +177,40 @@ void load_graph(const char* path, CSRGraph& g) {
     }
     for (auto& th : ths) th.join();
 
-    // Compute heads and per-thread starts
+    // Compute heads and convert t_deg in-place into thread start offsets (zero extra memory!)
     g.fwd_head.assign(g.n + 1, 0);
     g.bwd_head.assign(g.n + 1, 0);
-
-    std::vector<std::vector<uint32_t>> fwd_starts(num_threads, std::vector<uint32_t>(g.n));
-    std::vector<std::vector<uint32_t>> bwd_starts(num_threads, std::vector<uint32_t>(g.n));
 
     uint32_t cur_f = 0, cur_b = 0;
     for (uint32_t i = 0; i < g.n; ++i) {
         g.fwd_head[i] = cur_f;
         for (size_t t = 0; t < num_threads; ++t) {
-            fwd_starts[t][i] = cur_f;
-            cur_f += t_deg[t].fwd[i];
+            uint32_t cnt = t_deg[t].fwd[i];
+            t_deg[t].fwd[i] = cur_f;
+            cur_f += cnt;
         }
 
         g.bwd_head[i] = cur_b;
         for (size_t t = 0; t < num_threads; ++t) {
-            bwd_starts[t][i] = cur_b;
-            cur_b += t_deg[t].bwd[i];
+            uint32_t cnt = t_deg[t].bwd[i];
+            t_deg[t].bwd[i] = cur_b;
+            cur_b += cnt;
         }
     }
     g.fwd_head[g.n] = cur_f;
     g.bwd_head[g.n] = cur_b;
 
-    // Free t_deg now
-    t_deg.clear();
-    t_deg.shrink_to_fit();
+    g.fwd_edges.resize(cur_f);
+    g.bwd_edges.resize(cur_b);
 
-    g.fwd_dst.resize(cur_f);
-    g.fwd_w.resize(cur_f);
-    g.bwd_dst.resize(cur_b);
-    g.bwd_w.resize(cur_b);
-
-    // Pass 2: Parallel direct scatter into CSR arrays
+    // Pass 2: Parallel direct scatter into packed 8-byte Edge CSR arrays
     ths.clear();
     for (size_t t = 0; t < num_threads; ++t) {
         ths.emplace_back([&, t]() {
             const char* cur = edges_start + split_points[t];
             const char* chunk_lim = edges_start + split_points[t + 1];
-            auto& f_start = fwd_starts[t];
-            auto& b_start = bwd_starts[t];
+            auto& f_start = t_deg[t].fwd;
+            auto& b_start = t_deg[t].bwd;
 
             while (cur < chunk_lim) {
                 while (cur < chunk_lim && (unsigned char)*cur <= ' ') cur++;
@@ -225,18 +221,19 @@ void load_graph(const char* path, CSRGraph& g) {
 
                 if (u < g.n) {
                     uint32_t pf = f_start[u]++;
-                    g.fwd_dst[pf] = v;
-                    g.fwd_w[pf] = w;
+                    g.fwd_edges[pf] = {v, w};
                 }
                 if (v < g.n) {
                     uint32_t pb = b_start[v]++;
-                    g.bwd_dst[pb] = u;
-                    g.bwd_w[pb] = w;
+                    g.bwd_edges[pb] = {u, w};
                 }
             }
         });
     }
     for (auto& th : ths) th.join();
+
+    t_deg.clear();
+    t_deg.shrink_to_fit();
 
     mf.close(); // Unmap graph.txt immediately
 #ifndef _WIN32
@@ -302,9 +299,10 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             uint32_t st = g.fwd_head[u];
             uint32_t en = g.fwd_head[u + 1];
             for (uint32_t i = st; i < en; ++i) {
-                uint64_t nd = d + g.fwd_w[i];
+                const auto& edge = g.fwd_edges[i];
+                uint64_t nd = d + edge.w;
                 if (nd < best) {
-                    uint32_t v = g.fwd_dst[i];
+                    uint32_t v = edge.dst;
                     if (ws.dist_f[v] == UINT64_MAX) {
                         ws.touched_f.push_back(v);
                         ws.dist_f[v] = nd;
@@ -340,9 +338,10 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             uint32_t st = g.bwd_head[u];
             uint32_t en = g.bwd_head[u + 1];
             for (uint32_t i = st; i < en; ++i) {
-                uint64_t nd = d + g.bwd_w[i];
+                const auto& edge = g.bwd_edges[i];
+                uint64_t nd = d + edge.w;
                 if (nd < best) {
-                    uint32_t v = g.bwd_dst[i];
+                    uint32_t v = edge.dst;
                     if (ws.dist_b[v] == UINT64_MAX) {
                         ws.touched_b.push_back(v);
                         ws.dist_b[v] = nd;
@@ -407,7 +406,7 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 8;
+    const size_t num_threads = 6;
     std::vector<WorkerState> worker_states(num_threads);
     for (size_t t = 0; t < num_threads; ++t) {
         worker_states[t].init(g.n);
