@@ -42,3 +42,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 35 | Parallel country deduplication run consistency | run-02d8d38563ff | 0.104 | 48.5 | 56.77 |
 | 36 | Hardware CRC32 name hashing + single-launch persistent thread barrier + sequential split points | run-3cb0627f62c9 | 0.101 | 49.6 | 56.71 |
 | 37 | Hardware CRC32 + single barrier consistency | run-0bb817a66388 | 0.102 | 49.0 | 56.66 |
+| 38 | Hardware CRC32 + single barrier consistency | run-6170f6cd4a66 | 0.112 | 49.2 | 55.66 |
