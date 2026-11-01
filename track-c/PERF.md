@@ -35,3 +35,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 28 | Restored proven consecutive filter with thread-local vector sort and unescaped quote fast-path | run-8713f6ab4b25 | 0.104 | 49 | 56.64 |
 | 29 | Parallel chunk partitioning & fast unquoted comma scan consistency | run-05e6f08b7f16 | 0.101 | 48 | 56.98 |
 | 30 | Consecutive filter with sort/unique deduplication consistency | run-42f059206bbc | 0.103 | 48 | 56.73 |
+| 31 | Composite (country, hash) key deduplication eliminating 2,880 separate heap vectors | pending | | | |

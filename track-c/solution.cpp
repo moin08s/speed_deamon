@@ -77,8 +77,6 @@ struct CountryStats {
     bool has_cents = false;
     int64_t sum_name_len = 0;
     int64_t sum_note_len = 0;
-    uint64_t last_hash = 0;
-    std::vector<uint64_t> name_hashes;
 };
 
 inline char* fast_i64(char* p, int64_t val) {
@@ -282,7 +280,7 @@ int main(int argc, char** argv) {
     std::cin.tie(NULL);
 
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 2);
+    mallopt(M_ARENA_MAX, 1);
 #endif
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
@@ -424,6 +422,7 @@ int main(int argc, char** argv) {
     for (auto& th : split_threads) th.join();
 
     std::vector<std::vector<CountryStats>> thread_stats(num_threads, std::vector<CountryStats>(num_countries));
+    std::vector<std::vector<uint64_t>> thread_keys(num_threads);
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
@@ -434,9 +433,9 @@ int main(int argc, char** argv) {
             if (start >= end) return;
 
             auto& stats = thread_stats[t];
-            for (auto& cs : stats) {
-                cs.name_hashes.reserve(128);
-            }
+            auto& keys = thread_keys[t];
+            keys.reserve(65536);
+            uint64_t last_key = 0;
 
             const char* p = mf.data + start;
             const char* limit = mf.data + end;
@@ -477,21 +476,17 @@ int main(int argc, char** argv) {
                 cs.sum_name_len += name_len;
                 cs.sum_note_len += note_len;
 
-                if (name_hash != cs.last_hash || cs.name_hashes.empty()) {
-                    cs.last_hash = name_hash;
-                    cs.name_hashes.push_back(name_hash);
+                uint64_t key = ((uint64_t)cid << 48) | (name_hash & 0x0000FFFFFFFFFFFFULL);
+                if (key != last_key) {
+                    last_key = key;
+                    keys.push_back(key);
                 }
             }
 
-            for (auto& cs : stats) {
-                if (!cs.name_hashes.empty()) {
-                    std::sort(cs.name_hashes.begin(), cs.name_hashes.end());
-                    cs.name_hashes.erase(std::unique(cs.name_hashes.begin(), cs.name_hashes.end()), cs.name_hashes.end());
-                }
-            }
+            std::sort(keys.begin(), keys.end());
+            keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
         });
     }
-
     for (auto& th : threads) th.join();
     mf.close(); // Immediately unmap records.csv to drop page cache
 
@@ -533,16 +528,20 @@ int main(int argc, char** argv) {
 
                 if (combined.count == 0) continue;
 
-                // Robust Phase 2 deduplication
+                // Robust Phase 2 deduplication using composite keys
                 size_t unique_names = 0;
                 if (combined.count == 1) {
                     unique_names = 1;
                 } else {
                     all_hashes.clear();
+                    uint64_t k_low = (uint64_t)cid << 48;
+                    uint64_t k_high = k_low | 0x0000FFFFFFFFFFFFULL;
                     for (size_t pt = 0; pt < num_threads; ++pt) {
-                        const auto& nh = thread_stats[pt][cid].name_hashes;
-                        if (!nh.empty()) {
-                            all_hashes.insert(all_hashes.end(), nh.begin(), nh.end());
+                        const auto& tk = thread_keys[pt];
+                        auto it1 = std::lower_bound(tk.begin(), tk.end(), k_low);
+                        auto it2 = std::upper_bound(it1, tk.end(), k_high);
+                        if (it1 != it2) {
+                            all_hashes.insert(all_hashes.end(), it1, it2);
                         }
                     }
                     if (all_hashes.size() <= 1) {
@@ -553,7 +552,6 @@ int main(int argc, char** argv) {
                         unique_names = all_hashes.size();
                     }
                 }
-
                 const std::string& cname = country_names[cid];
                 char* lp = line_buf;
                 std::memcpy(lp, cname.data(), cname.size());
