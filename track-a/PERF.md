@@ -34,4 +34,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 27 | Single flat entry buffer per thread + in-memory parallel counting sort + contiguous lat_pool scatter | run-ab2d69133b7c | 0.106 | 59 | 60.42 |
 | 28 | Restored streaming hour-partitioned reduction with in-flight capacity reclamation | run-af0a37b2ae54 | 0.076 | 39 | 65.99 |
 | 29 | 2-entry thread-local MRU endpoint cache (bypasses hash computation on repeated routes) | run-805a0b9aedfe | 0.079 | 39 | 65.36 |
-| 30 | Vectorized AVX2 SIMD space delimiter match + chronological hour index caching | pending | | | |
+| 30 | Vectorized AVX2 SIMD space delimiter match + chronological hour index caching | run-003269409669 | 0.076 | 38 | 65.75 |
+| 31 | Single flat vector per thread + in-memory counting sort eliminating 864-vector heap contention | pending | | | |
