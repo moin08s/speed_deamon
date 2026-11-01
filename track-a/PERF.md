@@ -54,3 +54,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 47 | Verified persistent barrier streaming execution on host page cache | run-66715c2c4892 | 0.0788 | 51.1 | 64.04 |
 | 48 | Sub-80ms persistent barrier streaming execution | run-1088102fe6cf | 0.0796 | 51.2 | 63.93 |
 | 49 | AVX2 space delimiter + 1-cycle hour cache + compact 352-line implementation | run-76074644623d | 0.0732 | 43.1 | 66.07 |
+| 50 | Zero-allocation string_view endpoint indexing + 12-thread parallel remap_eid (New PB 67.98 pts) | run-68650f6ed45c | 0.0635 | 39.3 | 67.98 |
