@@ -7,7 +7,6 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdio>
-
 #ifdef _WIN32
 #include <windows.h>
 #include <intrin.h>
@@ -16,7 +15,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <malloc.h>
 #include <x86intrin.h>
 #endif
 
@@ -247,12 +245,9 @@ int main(int argc, char** argv) {
 
     std::barrier sync(num_threads);
 
-    struct Item { uint16_t cid; uint64_t hash; };
-
     struct TData {
         std::vector<CountryStats> stats;
-        std::vector<Item> raw_items;
-        std::vector<uint64_t> sorted_hashes;
+        std::vector<uint64_t> items;
         uint32_t offsets[512];
         std::string out;
     };
@@ -263,8 +258,7 @@ int main(int argc, char** argv) {
         ths.emplace_back([&, t]() {
             auto& td = tdata[t];
             td.stats.resize(num_countries);
-            size_t chunk_bytes = splits[t + 1] - splits[t];
-            td.raw_items.reserve(chunk_bytes / 45 + 1024);
+            td.items.reserve((splits[t + 1] - splits[t]) / 40 + 1024);
 
             const char* p = mf.data + splits[t], *lim = mf.data + splits[t + 1];
             if (t == 0) {
@@ -272,8 +266,6 @@ int main(int argc, char** argv) {
                 while (p < lim && *p != '\n') p++;
                 if (p < lim && *p == '\n') p++;
             }
-
-            uint32_t counts[512]; std::memset(counts, 0, sizeof(counts));
 
             while (p < lim) {
                 if (*p == '\r' || *p == '\n') { p++; continue; }
@@ -291,22 +283,19 @@ int main(int argc, char** argv) {
                 if (!cs.has_cents) { cs.min_cents = cs.max_cents = cents; cs.has_cents = true; }
                 else { if (cents < cs.min_cents) cs.min_cents = cents; if (cents > cs.max_cents) cs.max_cents = cents; }
                 cs.sum_name_len += nlen; cs.sum_note_len += ntlen;
-
-                td.raw_items.push_back({cid, h});
-                counts[cid]++;
+                td.items.push_back(((uint64_t)cid << 56) | (h & 0x00FFFFFFFFFFFFFFULL));
             }
 
-            // O(N) linear counting sort partition into sorted_hashes
-            size_t n_items = td.raw_items.size();
-            td.sorted_hashes.resize(n_items);
-            td.offsets[0] = 0;
-            for (size_t c = 0; c < num_countries; ++c) td.offsets[c + 1] = td.offsets[c] + counts[c];
-            uint32_t cur_pos[512]; std::memcpy(cur_pos, td.offsets, sizeof(cur_pos));
-            for (size_t i = 0; i < n_items; ++i) {
-                const auto& item = td.raw_items[i];
-                td.sorted_hashes[cur_pos[item.cid]++] = item.hash;
+            std::sort(td.items.begin(), td.items.end());
+            td.items.erase(std::unique(td.items.begin(), td.items.end()), td.items.end());
+
+            std::memset(td.offsets, 0, sizeof(td.offsets));
+            uint32_t n_items = (uint32_t)td.items.size(), cur_c = 0;
+            for (uint32_t i = 0; i < n_items; ++i) {
+                uint16_t item_c = (uint16_t)(td.items[i] >> 56);
+                while (cur_c <= item_c) td.offsets[cur_c++] = i;
             }
-            std::vector<Item>().swap(td.raw_items);
+            while (cur_c <= num_countries) td.offsets[cur_c++] = n_items;
 
             sync.arrive_and_wait();
             if (t == 0) mf.close();
@@ -337,7 +326,7 @@ int main(int argc, char** argv) {
                         all_h.clear();
                         for (size_t pt = 0; pt < num_threads; ++pt) {
                             uint32_t si = tdata[pt].offsets[c], ei = tdata[pt].offsets[c + 1];
-                            all_h.insert(all_h.end(), tdata[pt].sorted_hashes.begin() + si, tdata[pt].sorted_hashes.begin() + ei);
+                            all_h.insert(all_h.end(), tdata[pt].items.begin() + si, tdata[pt].items.begin() + ei);
                         }
                         std::sort(all_h.begin(), all_h.end());
                         all_h.erase(std::unique(all_h.begin(), all_h.end()), all_h.end());
