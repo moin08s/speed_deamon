@@ -31,3 +31,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 24 | Balanced frontier size stepping consistency | run-22ec81ccfbce | 1.031 | 323.5 | 42.93 |
 | 25 | Packed 8-byte Edge CSR array + in-place t_deg prefix sum (zero fwd_starts/bwd_starts memory) + 6 P-core worker topology | run-10eed154c014 | 1.003 | 266.4 | 44.09 |
 | 26 | Sub-second bidirectional Dijkstra with packed 8-byte Edge CSR cache efficiency | run-061d7f00d407 | 0.977 | 266.4 | 44.38 |
+| 27 | Sub-second bidirectional Dijkstra with packed 8-byte Edge CSR cache efficiency | run-01c5071a4545 | 1.055 | 266.2 | 43.55 |
