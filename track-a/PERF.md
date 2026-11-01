@@ -55,4 +55,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 48 | Sub-80ms persistent barrier streaming execution | run-1088102fe6cf | 0.0796 | 51.2 | 63.93 |
 | 49 | AVX2 space delimiter + 1-cycle hour cache + compact 352-line implementation | run-76074644623d | 0.0732 | 43.1 | 66.07 |
 | 50 | Zero-allocation string_view endpoint indexing + 12-thread parallel remap_eid | run-68650f6ed45c | 0.0635 | 39.3 | 67.98 |
-| 51 | 60ms sub-40MB persistent barrier streaming execution (New PB 68.54 pts) | run-02d2ad89ce11 | 0.0600 | 39.6 | 68.54 |
+| 51 | 60ms sub-40MB persistent barrier streaming execution | run-02d2ad89ce11 | 0.0600 | 39.6 | 68.54 |
+| 52 | Early input file unmap prior to Phase 2 + contiguous endpoint pool (New PB 68.71 pts) | run-16a764b7f31d | 0.0601 | 37.7 | 68.71 |

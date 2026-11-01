@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdio>
+#include <atomic>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -97,7 +98,6 @@ struct FastStringMap {
     Entry entries[CAPACITY];
     int count = 0;
     FastStringMap() { std::memset(entries, 0, sizeof(entries)); }
-
     inline int get_or_insert(const char* s, size_t len, uint64_t h) {
         size_t idx = h & MASK;
         while (entries[idx].hash != 0) {
@@ -187,10 +187,34 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
     }
 }
 
-inline char* fast_u64(char* p, uint64_t val) {
-    if (!val) { *p++ = '0'; return p; }
-    char buf[20]; int len = 0;
-    while (val) { buf[len++] = '0' + (val % 10); val /= 10; }
+static const char DIGITS_100[200] = {
+    '0','0','0','1','0','2','0','3','0','4','0','5','0','6','0','7','0','8','0','9',
+    '1','0','1','1','1','2','1','3','1','4','1','5','1','6','1','7','1','8','1','9',
+    '2','0','2','1','2','2','2','3','2','4','2','5','2','6','2','7','2','8','2','9',
+    '3','0','3','1','3','2','3','3','3','4','3','5','3','6','3','7','3','8','3','9',
+    '4','0','4','1','4','2','4','3','4','4','4','5','4','6','4','7','4','8','4','9',
+    '5','0','5','1','5','2','5','3','5','4','5','5','5','6','5','7','5','8','5','9',
+    '6','0','6','1','6','2','6','3','6','4','6','5','6','6','6','7','6','8','6','9',
+    '7','0','7','1','7','2','7','3','7','4','7','5','7','6','7','7','7','8','7','9',
+    '8','0','8','1','8','2','8','3','8','4','8','5','8','6','8','7','8','8','8','9',
+    '9','0','9','1','9','2','9','3','9','4','9','5','9','6','9','7','9','8','9','9'
+};
+
+inline char* fast_u32(char* p, uint32_t val) {
+    if (val < 10) { *p++ = (char)('0' + val); return p; }
+    char buf[12]; int len = 0;
+    while (val >= 100) {
+        uint32_t rem = val % 100;
+        val /= 100;
+        buf[len++] = DIGITS_100[rem * 2 + 1];
+        buf[len++] = DIGITS_100[rem * 2];
+    }
+    if (val < 10) {
+        buf[len++] = (char)('0' + val);
+    } else {
+        buf[len++] = DIGITS_100[val * 2 + 1];
+        buf[len++] = DIGITS_100[val * 2];
+    }
     for (int i = len - 1; i >= 0; --i) *p++ = buf[i];
     return p;
 }
@@ -201,6 +225,7 @@ int main(int argc, char** argv) {
 #ifndef _WIN32
     mallopt(M_ARENA_MAX, 2);
 #endif
+
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
     std::string out_dir = (argc > 2) ? argv[2] : "/out";
 
@@ -225,6 +250,7 @@ int main(int argc, char** argv) {
     for (auto& th : threads) th.join();
 
     std::vector<std::string_view> raw_endpoints;
+    raw_endpoints.reserve(2500);
     for (size_t i = 0; i < num_threads; ++i) {
         for (const auto& ep : parse_data[i].endpoints) raw_endpoints.push_back(ep);
     }
@@ -244,39 +270,31 @@ int main(int argc, char** argv) {
         global_endpoints[i] = std::string_view(ep_pool.data() + off, raw_endpoints[i].size());
     }
 
-    threads.clear();
     for (size_t i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&, i]() {
-            auto& ptd = parse_data[i];
-            ptd.remap_eid.resize(ptd.endpoints.size());
-            for (size_t le = 0; le < ptd.endpoints.size(); ++le) {
-                ptd.remap_eid[le] = (int)(std::lower_bound(global_endpoints.begin(), global_endpoints.end(), ptd.endpoints[le]) - global_endpoints.begin());
-            }
-        });
+        auto& ptd = parse_data[i];
+        ptd.remap_eid.resize(ptd.endpoints.size());
+        for (size_t le = 0; le < ptd.endpoints.size(); ++le) {
+            ptd.remap_eid[le] = (int)(std::lower_bound(global_endpoints.begin(), global_endpoints.end(), ptd.endpoints[le]) - global_endpoints.begin());
+        }
     }
-    for (auto& th : threads) th.join();
 
-    // RELEASE INPUT FILE FROM MEMORY
     mf.close();
 #ifndef _WIN32
     malloc_trim(0);
 #endif
 
-    std::vector<std::string> thread_outputs(num_threads);
+    std::vector<std::string> hour_outputs(72);
     threads.clear();
-    size_t h_per_th = (72 + num_threads - 1) / num_threads;
+    std::atomic<size_t> next_hour(0);
 
     for (size_t t = 0; t < num_threads; ++t) {
-        size_t h_start = t * h_per_th, h_end = std::min((size_t)72, h_start + h_per_th);
-        threads.emplace_back([&, t, h_start, h_end]() {
-            if (h_start >= h_end) return;
-            std::string& out_buf = thread_outputs[t];
-            out_buf.reserve((h_end - h_start) * 2000 * 96);
+        threads.emplace_back([&, t]() {
             std::vector<uint32_t> ep_counts(num_eps), ep_errors(num_eps), ep_offsets(num_eps + 1), cur_pos(num_eps + 1), lat_pool;
-            lat_pool.reserve(65536);
+            lat_pool.reserve(16384);
             char line_buf[2048];
 
-            for (size_t h = h_start; h < h_end; ++h) {
+            size_t h;
+            while ((h = next_hour.fetch_add(1)) < 72) {
                 size_t total_recs = 0;
                 for (size_t pt = 0; pt < num_threads; ++pt) total_recs += parse_data[pt].hour_records[h].size();
                 if (!total_recs) continue;
@@ -310,6 +328,9 @@ int main(int argc, char** argv) {
                     std::vector<RawRecord>().swap(parse_data[pt].hour_records[h]);
                 }
 
+                std::string& out_buf = hour_outputs[h];
+                out_buf.reserve(num_eps * 48);
+
                 const char* hr_str = GLOBAL_HOURS[h];
                 for (size_t gid = 0; gid < num_eps; ++gid) {
                     uint32_t n = ep_counts[gid];
@@ -338,18 +359,18 @@ int main(int argc, char** argv) {
                     }
 
                     uint32_t err = ep_errors[gid];
-                    uint64_t ppm = (uint64_t)err * 1000000ULL / n;
+                    uint32_t ppm = (uint32_t)((uint64_t)err * 1000000ULL / n);
                     std::string_view ep_str = global_endpoints[gid];
 
                     char* p = line_buf;
                     std::memcpy(p, hr_str, 20); p += 20; *p++ = ' ';
                     std::memcpy(p, ep_str.data(), ep_str.size()); p += ep_str.size(); *p++ = ' ';
-                    p = fast_u64(p, n); *p++ = ' ';
-                    p = fast_u64(p, p50); *p++ = ' ';
-                    p = fast_u64(p, p95); *p++ = ' ';
-                    p = fast_u64(p, p99); *p++ = ' ';
-                    p = fast_u64(p, err); *p++ = ' ';
-                    p = fast_u64(p, ppm); *p++ = '\n';
+                    p = fast_u32(p, n); *p++ = ' ';
+                    p = fast_u32(p, p50); *p++ = ' ';
+                    p = fast_u32(p, p95); *p++ = ' ';
+                    p = fast_u32(p, p99); *p++ = ' ';
+                    p = fast_u32(p, err); *p++ = ' ';
+                    p = fast_u32(p, ppm); *p++ = '\n';
                     out_buf.append(line_buf, p - line_buf);
                 }
             }
@@ -360,8 +381,8 @@ int main(int argc, char** argv) {
     FILE* fp = fopen((out_dir + "/summary.txt").c_str(), "wb");
     if (!fp) return 1;
     char out_buf[1048576]; setvbuf(fp, out_buf, _IOFBF, sizeof(out_buf));
-    for (size_t t = 0; t < num_threads; ++t) {
-        if (!thread_outputs[t].empty()) fwrite(thread_outputs[t].data(), 1, thread_outputs[t].size(), fp);
+    for (size_t h = 0; h < 72; ++h) {
+        if (!hour_outputs[h].empty()) fwrite(hour_outputs[h].data(), 1, hour_outputs[h].size(), fp);
     }
     fclose(fp);
     return 0;
