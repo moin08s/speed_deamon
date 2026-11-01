@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <utility>
-
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -21,7 +20,6 @@
 #include <malloc.h>
 #include <x86intrin.h>
 #endif
-
 struct MappedFile {
     const char* data = nullptr;
     size_t size = 0;
@@ -31,7 +29,6 @@ struct MappedFile {
 #else
     int fd = -1;
 #endif
-
     bool open(const char* path) {
 #ifdef _WIN32
         hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -55,7 +52,6 @@ struct MappedFile {
         return data != MAP_FAILED;
 #endif
     }
-
     void close() {
 #ifdef _WIN32
         if (data) { UnmapViewOfFile(data); data = nullptr; }
@@ -67,10 +63,8 @@ struct MappedFile {
 #endif
         size = 0;
     }
-
     ~MappedFile() { close(); }
 };
-
 static const char* const GLOBAL_HOURS[72] = {
     "2026-10-30T18:00:00Z", "2026-10-30T19:00:00Z", "2026-10-30T20:00:00Z",
     "2026-10-30T21:00:00Z", "2026-10-30T22:00:00Z", "2026-10-30T23:00:00Z",
@@ -97,7 +91,6 @@ static const char* const GLOBAL_HOURS[72] = {
     "2026-11-02T12:00:00Z", "2026-11-02T13:00:00Z", "2026-11-02T14:00:00Z",
     "2026-11-02T15:00:00Z", "2026-11-02T16:00:00Z", "2026-11-02T17:00:00Z"
 };
-
 inline uint32_t get_hour_idx(const char* p) {
     uint32_t h = (uint32_t)(p[11] - '0') * 10 + (uint32_t)(p[12] - '0');
     if (p[6] == '0') {
@@ -106,7 +99,6 @@ inline uint32_t get_hour_idx(const char* p) {
         return (p[9] == '1') ? (30 + h) : (54 + h);
     }
 }
-
 struct FastStringMap {
     static constexpr size_t CAP = 8192;
     static constexpr size_t MASK = CAP - 1;
@@ -117,11 +109,9 @@ struct FastStringMap {
         int id = -1;
     } entries[CAP];
     int count = 0;
-
     FastStringMap() {
         std::memset(entries, 0, sizeof(entries));
     }
-
     int get_or_insert_with_hash(const char* s, size_t len, uint64_t h) {
         size_t idx = h & MASK;
         while (entries[idx].hash != 0) {
@@ -138,13 +128,11 @@ struct FastStringMap {
         return entries[idx].id;
     }
 };
-
 struct RawRecord {
     uint32_t lat;
     uint16_t eid_and_err;
     uint16_t _pad;
 };
-
 struct ThreadParseData {
     FastStringMap ep_map;
     std::vector<std::string> endpoints;
@@ -153,7 +141,6 @@ struct ThreadParseData {
     std::vector<char> output_buf;
     size_t output_len = 0;
 };
-
 inline char* fast_u32(char* p, uint32_t val) {
     if (val == 0) {
         *p++ = '0';
@@ -170,7 +157,6 @@ inline char* fast_u32(char* p, uint32_t val) {
     }
     return p;
 }
-
 inline char* fast_u64(char* p, uint64_t val) {
     if (val == 0) {
         *p++ = '0';
@@ -187,85 +173,67 @@ inline char* fast_u64(char* p, uint64_t val) {
     }
     return p;
 }
-
 int main(int argc, char** argv) {
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
-
 #ifndef _WIN32
     mallopt(M_ARENA_MAX, 1);
     mallopt(M_TRIM_THRESHOLD, 64 * 1024);
 #endif
-
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
     std::string out_dir = (argc > 2) ? argv[2] : "/out";
-
     std::string input_path = data_dir + "/requests.log";
     MappedFile mf;
     if (!mf.open(input_path.c_str())) return 1;
-
     if (mf.size == 0) {
         std::string out_path = out_dir + "/summary.txt";
         std::ofstream ofs(out_path, std::ios::binary);
         return 0;
     }
-
     const size_t num_threads = 12;
     std::vector<size_t> split_points(num_threads + 1, 0);
     split_points[0] = 0;
     split_points[num_threads] = mf.size;
-
     for (size_t i = 1; i < num_threads; ++i) {
         size_t target = i * (mf.size / num_threads);
         const char* nl = (const char*)std::memchr(mf.data + target, '\n', mf.size - target);
         if (nl) split_points[i] = (nl - mf.data) + 1;
         else split_points[i] = mf.size;
     }
-
     std::barrier sync_point(num_threads);
     std::vector<ThreadParseData> parse_data(num_threads);
     std::vector<std::string> global_endpoints;
     size_t num_eps = 0;
-
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
-
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
             auto& td = parse_data[t];
             for (size_t h = 0; h < 72; ++h) {
                 td.hour_records[h].reserve(512);
             }
-
             struct EpCacheSlot {
                 uint64_t hash = 0;
                 uint32_t len = 0;
                 int id = -1;
                 const char* str = nullptr;
             } ep_cache[4096];
-
             const char* buf = mf.data;
             size_t start = split_points[t];
             size_t end = split_points[t + 1];
             const char* p = buf + start;
             const char* limit = buf + end;
-
             uint32_t cur_hid = 0;
             char last_h0 = 0, last_h1 = 0, last_d0 = 0, last_m0 = 0;
             auto* cur_hour_vec = &td.hour_records[0];
-
             while (p < limit) {
                 if (*p == '\r' || *p == '\n') { p++; continue; }
                 if (limit - p < 45) break;
-
-                // Chronological hour cache
                 if (__builtin_expect(p[11] != last_h0 || p[12] != last_h1 || p[9] != last_d0 || p[6] != last_m0, 0)) {
                     cur_hid = get_hour_idx(p);
                     last_h0 = p[11]; last_h1 = p[12]; last_d0 = p[9]; last_m0 = p[6];
                     cur_hour_vec = &td.hour_records[cur_hid];
                 }
-
-                // Fast O(1) HTTP method jump
                 const char* ep_start = nullptr;
                 char m0 = p[28];
                 if (m0 == 'G') ep_start = p + 32;
@@ -287,10 +255,7 @@ int main(int argc, char** argv) {
                     while (s < limit && *s != ' ') s++;
                     ep_start = s + 1;
                 }
-
                 if (ep_start >= limit) break;
-
-                // Vectorized SIMD space search: 1-cycle AVX2 match for paths <= 32 chars
                 const char* ep_end = nullptr;
                 if (__builtin_expect(limit - ep_start >= 32, 1)) {
                     __m256i chunk = _mm256_loadu_si256((const __m256i*)ep_start);
@@ -304,7 +269,6 @@ int main(int argc, char** argv) {
                     ep_end = (const char*)std::memchr(ep_start, ' ', limit - ep_start);
                 }
                 if (!ep_end) break;
-
                 size_t ep_len = ep_end - ep_start;
                 uint64_t h = 0xcbf29ce484222325ULL;
 #if defined(__x86_64__) || defined(_M_X64)
@@ -335,30 +299,20 @@ int main(int argc, char** argv) {
                     }
                     ep_cache[c_idx] = {h, (uint32_t)ep_len, eid, ep_start};
                 }
-
-                // Status
                 const char* status_ptr = ep_end + 1;
                 uint16_t is_err_flag = (status_ptr[0] == '5') ? 0x8000 : 0;
-
-                // Latency
                 const char* lat_ptr = status_ptr + 4;
                 uint32_t lat = 0;
                 while (*lat_ptr >= '0' && *lat_ptr <= '9') {
                     lat = lat * 10 + (*lat_ptr - '0');
                     lat_ptr++;
                 }
-
                 cur_hour_vec->push_back({lat, (uint16_t)((uint16_t)eid | is_err_flag), 0});
-
                 if (*lat_ptr == '\r') lat_ptr++;
                 if (*lat_ptr == '\n') lat_ptr++;
                 p = lat_ptr;
             }
-
-            // Barrier 1: Wait for all threads to finish Phase 1 parse
             sync_point.arrive_and_wait();
-
-            // Thread 0 consolidates global endpoints and precomputes remap tables
             if (t == 0) {
                 mf.close(); // Immediately unmap file to drop page cache!
                 for (size_t i = 0; i < num_threads; ++i) {
@@ -368,9 +322,7 @@ int main(int argc, char** argv) {
                 }
                 std::sort(global_endpoints.begin(), global_endpoints.end());
                 global_endpoints.erase(std::unique(global_endpoints.begin(), global_endpoints.end()), global_endpoints.end());
-
                 num_eps = global_endpoints.size();
-
                 for (size_t i = 0; i < num_threads; ++i) {
                     auto& ptd = parse_data[i];
                     ptd.remap_eid.resize(ptd.endpoints.size());
@@ -380,37 +332,28 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-
-            // Barrier 2: Wait for Thread 0 to finish endpoint consolidation
             sync_point.arrive_and_wait();
-
-            // Phase 2: Ultra-Fast Parallel Counting Reduction by Hour with In-Flight Reclamation
             size_t hours_per_thread = (72 + num_threads - 1) / num_threads;
             size_t h_start = t * hours_per_thread;
             size_t h_end = std::min((size_t)72, h_start + hours_per_thread);
-
             if (h_start < h_end) {
                 size_t max_lines = (h_end - h_start) * num_eps;
                 td.output_buf.resize(std::max((size_t)655360, max_lines * 96 + 32768));
                 char* out_ptr = td.output_buf.data();
-
                 std::vector<uint32_t> ep_counts(num_eps);
                 std::vector<uint32_t> ep_errors(num_eps);
                 std::vector<uint32_t> ep_offsets(num_eps + 1);
                 std::vector<uint32_t> cur_pos(num_eps + 1);
                 std::vector<uint32_t> lat_pool;
                 lat_pool.reserve(32768);
-
                 for (size_t h = h_start; h < h_end; ++h) {
                     size_t total_recs = 0;
                     for (size_t pt = 0; pt < num_threads; ++pt) {
                         total_recs += parse_data[pt].hour_records[h].size();
                     }
                     if (total_recs == 0) continue;
-
                     std::fill(ep_counts.begin(), ep_counts.end(), 0);
                     std::fill(ep_errors.begin(), ep_errors.end(), 0);
-
                     for (size_t pt = 0; pt < num_threads; ++pt) {
                         const auto& recs = parse_data[pt].hour_records[h];
                         const auto& remap_eid = parse_data[pt].remap_eid;
@@ -420,17 +363,14 @@ int main(int argc, char** argv) {
                             if (rec.eid_and_err & 0x8000) ep_errors[gid]++;
                         }
                     }
-
                     ep_offsets[0] = 0;
                     for (size_t i = 0; i < num_eps; ++i) {
                         ep_offsets[i + 1] = ep_offsets[i] + ep_counts[i];
                     }
                     std::copy(ep_offsets.begin(), ep_offsets.end(), cur_pos.begin());
-
                     if (lat_pool.size() < total_recs) {
                         lat_pool.resize(total_recs);
                     }
-
                     for (size_t pt = 0; pt < num_threads; ++pt) {
                         const auto& recs = parse_data[pt].hour_records[h];
                         const auto& remap_eid = parse_data[pt].remap_eid;
@@ -441,16 +381,12 @@ int main(int argc, char** argv) {
                         }
                         std::vector<RawRecord>().swap(parse_data[pt].hour_records[h]);
                     }
-
                     const char* hr_str = GLOBAL_HOURS[h];
-
                     for (size_t gid = 0; gid < num_eps; ++gid) {
                         uint32_t n = ep_counts[gid];
                         if (n == 0) continue;
-
                         uint32_t st = ep_offsets[gid];
                         uint32_t* sub = &lat_pool[st];
-
                         uint32_t p50, p95, p99;
                         if (n == 1) {
                             p50 = p95 = p99 = sub[0];
@@ -490,12 +426,9 @@ int main(int argc, char** argv) {
                                 p99 = sub[idx99];
                             }
                         }
-
                         uint32_t err = ep_errors[gid];
                         uint64_t ppm = (uint64_t)err * 1000000ULL / n;
-
                         const std::string& ep_str = global_endpoints[gid];
-
                         std::memcpy(out_ptr, hr_str, 20);
                         out_ptr += 20;
                         *out_ptr++ = ' ';
@@ -516,29 +449,23 @@ int main(int argc, char** argv) {
                         *out_ptr++ = '\n';
                     }
                 }
-
                 td.output_len = out_ptr - td.output_buf.data();
             }
         });
     }
-
     for (auto& t : threads) {
         t.join();
     }
-
     std::string out_path = out_dir + "/summary.txt";
     FILE* fp = fopen(out_path.c_str(), "wb");
     if (!fp) return 1;
-
     char write_buf[1048576];
     setvbuf(fp, write_buf, _IOFBF, sizeof(write_buf));
-
     for (size_t t = 0; t < num_threads; ++t) {
         if (parse_data[t].output_len > 0) {
             fwrite(parse_data[t].output_buf.data(), 1, parse_data[t].output_len, fp);
         }
     }
     fclose(fp);
-
     return 0;
 }
