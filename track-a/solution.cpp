@@ -338,7 +338,7 @@ int main(int argc, char** argv) {
             size_t h_end = std::min((size_t)72, h_start + hours_per_thread);
             if (h_start < h_end) {
                 size_t max_lines = (h_end - h_start) * num_eps;
-                td.output_buf.resize(std::max((size_t)655360, max_lines * 96 + 32768));
+                td.output_buf.resize(max_lines * 70 + 8192);
                 char* out_ptr = td.output_buf.data();
                 std::vector<uint32_t> ep_counts(num_eps);
                 std::vector<uint32_t> ep_errors(num_eps);
@@ -379,7 +379,7 @@ int main(int argc, char** argv) {
                             uint32_t pos = cur_pos[gid]++;
                             lat_pool[pos] = rec.lat;
                         }
-                        std::vector<RawRecord>().swap(parse_data[pt].hour_records[h]);
+                        // eliminate arena lock contention
                     }
                     const char* hr_str = GLOBAL_HOURS[h];
                     for (size_t gid = 0; gid < num_eps; ++gid) {
