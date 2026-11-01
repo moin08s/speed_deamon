@@ -125,7 +125,7 @@ void load_graph(const char* path, CSRGraph& g) {
     g.n = parse_uint(p, limit);
     g.m = parse_uint(p, limit);
 
-    const size_t num_threads = 12;
+    const size_t num_threads = 8;
 
     // Advance p to first edge line
     while (p < limit && *p != '\n') p++;
@@ -287,7 +287,7 @@ int64_t solve_bidir(const CSRGraph& g, WorkerState& ws, uint32_t s, uint32_t t) 
             break;
         }
 
-        if (ws.hf.front().first <= ws.hb.front().first) {
+        if (ws.hf.size() <= ws.hb.size()) {
             std::pop_heap(ws.hf.begin(), ws.hf.end(), std::greater<Element>());
             auto [d, u] = ws.hf.back();
             ws.hf.pop_back();
@@ -407,7 +407,7 @@ int main(int argc, char** argv) {
     }
 
     size_t total_q = queries.size();
-    const size_t num_threads = 12;
+    const size_t num_threads = 8;
     std::vector<WorkerState> worker_states(num_threads);
     for (size_t t = 0; t < num_threads; ++t) {
         worker_states[t].init(g.n);

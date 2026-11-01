@@ -37,4 +37,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 30 | Consecutive filter with sort/unique deduplication consistency | run-42f059206bbc | 0.103 | 48 | 56.73 |
 | 31 | Composite (country, hash) key deduplication eliminating 2,880 separate heap vectors | run-a0eb17a0302e | 0.132 | 44.1 | 54.50 |
 | 32 | Single flat array sort + O(N) linear scan deduplication + incremental 256KB madvise eviction | run-b811bbc93003 | 0.426 | 38.6 | 42.28 |
-| 33 | Restored proven parallel country hash deduplication from commit 05b3c62 | pending | | | |
+| 33 | Restored proven parallel country hash deduplication from commit 05b3c62 | run-1791ba7ce50a | 0.104 | 48.8 | 56.74 |
+| 34 | Parallel country deduplication consistency | pending | | | |

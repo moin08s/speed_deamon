@@ -38,4 +38,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 31 | Single flat vector per thread test (simultaneous buffer overlap increased peak RSS) | run-1805915b5ccf | 0.080 | 60 | 63.24 |
 | 32 | Restored streaming hour-partitioned reduction with AVX2 SIMD space delimiter match | run-003269409669 | 0.076 | 38 | 65.75 |
 | 33 | Incremental 256KB madvise page cache eviction in parse_chunk loop | run-3a98b5ec1ec2 | 0.078 | 38.8 | 65.43 |
-| 34 | Restored streaming hour-partitioned reduction with zero syscall lock contention | pending | | | |
+| 34 | Restored streaming hour-partitioned reduction with zero syscall lock contention | run-d6cf52ba5c05 | 0.076 | 39.0 | 65.72 |
+| 35 | AVX2 SIMD space delimiter and streaming reduction consistency | pending | | | |
