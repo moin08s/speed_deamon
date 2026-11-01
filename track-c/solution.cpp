@@ -10,12 +10,14 @@
 #include <cstdio>
 #ifdef _WIN32
 #include <windows.h>
+#include <intrin.h>
 #else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <malloc.h>
+#include <x86intrin.h>
 #endif
 
 struct MappedFile {
@@ -105,7 +107,7 @@ inline int64_t parse_field_int(const char*& p, const char* limit) {
 }
 
 inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& out_hash, size_t& utf8_len) {
-    out_hash = 0xcbf29ce484222325ULL;
+    uint64_t h = 0xcbf29ce484222325ULL;
     utf8_len = 0;
     if (p >= limit) return;
     if (*p == '"') {
@@ -113,16 +115,34 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
         while (p < limit) {
             const char* q = (const char*)std::memchr(p, '"', limit - p);
             if (!q) {
-                utf8_len += (limit - p);
-                for (const char* k = p; k < limit; ++k) out_hash = (out_hash ^ (unsigned char)*k) * 0x100000001b3ULL;
-                p = limit;
+                size_t seg = limit - p;
+                utf8_len += seg;
+                while (seg >= 8) {
+                    uint64_t v; std::memcpy(&v, p, 8);
+                    h = _mm_crc32_u64(h, v);
+                    p += 8; seg -= 8;
+                }
+                while (seg > 0) {
+                    h = _mm_crc32_u8((uint32_t)h, (uint8_t)*p++);
+                    seg--;
+                }
                 break;
             }
-            utf8_len += (q - p);
-            for (const char* k = p; k < q; ++k) out_hash = (out_hash ^ (unsigned char)*k) * 0x100000001b3ULL;
+            size_t seg = q - p;
+            utf8_len += seg;
+            const char* ptr = p;
+            while (seg >= 8) {
+                uint64_t v; std::memcpy(&v, ptr, 8);
+                h = _mm_crc32_u64(h, v);
+                ptr += 8; seg -= 8;
+            }
+            while (seg > 0) {
+                h = _mm_crc32_u8((uint32_t)h, (uint8_t)*ptr++);
+                seg--;
+            }
             if (q + 1 < limit && *(q + 1) == '"') {
                 utf8_len++;
-                out_hash = (out_hash ^ '"') * 0x100000001b3ULL;
+                h = _mm_crc32_u8((uint32_t)h, (uint8_t)'"');
                 p = q + 2;
             } else {
                 p = q + 1;
@@ -131,11 +151,23 @@ inline void parse_field_name_hash(const char*& p, const char* limit, uint64_t& o
         }
         if (p < limit && *p == ',') p++;
     } else {
-        const char* s = p;
-        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') out_hash = (out_hash ^ (unsigned char)*p++) * 0x100000001b3ULL;
-        utf8_len = p - s;
-        if (p < limit && *p == ',') p++;
+        const char* q = (const char*)std::memchr(p, ',', limit - p);
+        if (!q) q = limit;
+        size_t seg = q - p;
+        utf8_len = seg;
+        const char* ptr = p;
+        while (seg >= 8) {
+            uint64_t v; std::memcpy(&v, ptr, 8);
+            h = _mm_crc32_u64(h, v);
+            ptr += 8; seg -= 8;
+        }
+        while (seg > 0) {
+            h = _mm_crc32_u8((uint32_t)h, (uint8_t)*ptr++);
+            seg--;
+        }
+        p = (q < limit) ? q + 1 : limit;
     }
+    out_hash = h;
 }
 
 inline size_t parse_field_len_only(const char*& p, const char* limit) {
@@ -152,10 +184,14 @@ inline size_t parse_field_len_only(const char*& p, const char* limit) {
         }
         if (p < limit && *p == ',') p++;
     } else {
-        const char* s = p;
-        while (p < limit && *p != ',' && *p != '\n' && *p != '\r') p++;
-        utf8_len = p - s;
-        if (p < limit && *p == ',') p++;
+        const char* q = (const char*)std::memchr(p, ',', limit - p);
+        if (q) {
+            utf8_len = q - p;
+            p = q + 1;
+        } else {
+            utf8_len = limit - p;
+            p = limit;
+        }
     }
     return utf8_len;
 }
@@ -208,9 +244,6 @@ size_t find_fast_split(const char* data, size_t size, size_t target) {
     return size;
 }
 
-// Packed (cid << 56) | (hash & 0x00FFFFFFFFFFFFFFULL)
-using NameItem = uint64_t;
-
 int main(int argc, char** argv) {
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
@@ -252,15 +285,17 @@ int main(int argc, char** argv) {
         }
         table[idx].hash = h ? h : 1;
         table[idx].len = (uint16_t)len;
-        uint16_t id = (uint16_t)raw_country_names.size();
-        table[idx].id = id;
         std::memcpy(table[idx].name, s, len);
         table[idx].name[len] = '\0';
+        uint16_t new_id = (uint16_t)raw_country_names.size();
+        table[idx].id = new_id;
         raw_country_names.emplace_back(s, len);
-        return id;
+        return new_id;
     };
 
-    std::vector<int16_t> region_to_country(1000000, -1);
+    std::vector<int16_t> region_to_country;
+    region_to_country.resize(1000000, -1);
+
     uint16_t code3_to_cid[32768];
     std::memset(code3_to_cid, 0xff, sizeof(code3_to_cid));
 
@@ -274,7 +309,7 @@ int main(int argc, char** argv) {
     while (rp < r_limit) {
         if (*rp == '\r' || *rp == '\n') { rp++; continue; }
         int32_t rid = 0;
-        while (rp < r_limit && *rp >= '0' && *rp <= '9') rid = rid * 10 + (*rp++ - '0');
+        while (rp < r_limit && *rp >= '0' && *rp <= '9') { rid = rid * 10 + (*rp - '0'); rp++; }
         if (rp < r_limit && *rp == ',') rp++;
         const char* c_start = rp;
         while (rp < r_limit && *rp != '\r' && *rp != '\n') rp++;
@@ -301,34 +336,34 @@ int main(int argc, char** argv) {
     }
     rf.close();
 
-    uint16_t unmatched_raw = get_country_id("_UNMATCHED", 10);
-    size_t num_countries = raw_country_names.size();
-    std::vector<uint16_t> sorted_order(num_countries);
-    for (size_t i = 0; i < num_countries; ++i) sorted_order[i] = (uint16_t)i;
-    std::sort(sorted_order.begin(), sorted_order.end(), [&](uint16_t a, uint16_t b) {
-        return raw_country_names[a] < raw_country_names[b];
-    });
+    uint16_t unmatched_id = (uint16_t)raw_country_names.size();
+    raw_country_names.push_back("_UNMATCHED");
 
-    std::vector<uint16_t> raw_to_canonical(num_countries);
-    std::vector<std::string> country_names(num_countries);
-    for (size_t new_id = 0; new_id < num_countries; ++new_id) {
-        uint16_t old_id = sorted_order[new_id];
-        raw_to_canonical[old_id] = (uint16_t)new_id;
-        country_names[new_id] = raw_country_names[old_id];
+    std::vector<std::string> country_names = raw_country_names;
+    std::sort(country_names.begin(), country_names.end());
+
+    std::vector<uint16_t> old_to_new_cid(raw_country_names.size());
+    for (size_t old_id = 0; old_id < raw_country_names.size(); ++old_id) {
+        auto it = std::lower_bound(country_names.begin(), country_names.end(), raw_country_names[old_id]);
+        old_to_new_cid[old_id] = (uint16_t)(it - country_names.begin());
     }
 
-    for (size_t i = 0; i < region_to_country.size(); ++i) {
-        if (region_to_country[i] >= 0) region_to_country[i] = (int16_t)raw_to_canonical[region_to_country[i]];
-    }
-    uint16_t unmatched_id = raw_to_canonical[unmatched_raw];
     size_t reg_table_size = region_to_country.size();
+    for (size_t rid = 0; rid < reg_table_size; ++rid) {
+        if (region_to_country[rid] >= 0) {
+            region_to_country[rid] = old_to_new_cid[region_to_country[rid]];
+        }
+    }
+    unmatched_id = old_to_new_cid[unmatched_id];
+    size_t num_countries = country_names.size();
 
     std::string records_path = data_dir + "/records.csv";
     MappedFile mf;
     if (!mf.open(records_path.c_str())) return 1;
 
     if (mf.size == 0) {
-        std::ofstream ofs(out_dir + "/aggregates.txt", std::ios::binary);
+        std::string out_path = out_dir + "/aggregates.txt";
+        std::ofstream ofs(out_path, std::ios::binary);
         return 0;
     }
 
@@ -337,35 +372,31 @@ int main(int argc, char** argv) {
     split_points[0] = 0;
     split_points[num_threads] = mf.size;
 
+    for (size_t i = 1; i < num_threads; ++i) {
+        size_t target = i * (mf.size / num_threads);
+        split_points[i] = find_fast_split(mf.data, mf.size, target);
+    }
+
     std::barrier sync_point(num_threads);
 
-    struct ThreadLocalData {
+    struct ThreadData {
         std::vector<CountryStatsRaw> stats;
-        std::vector<NameItem> name_items;
+        std::vector<uint64_t> name_items;
         uint32_t cid_start_offset[512];
         std::string output_str;
     };
-    std::vector<ThreadLocalData> tdata(num_threads);
+    std::vector<ThreadData> tdata(num_threads);
 
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
 
     for (size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
-            // Step 1: Compute split point in parallel
-            if (t > 0) {
-                size_t target = t * (mf.size / num_threads);
-                split_points[t] = find_fast_split(mf.data, mf.size, target);
-            }
-
-            sync_point.arrive_and_wait();
-
-            // Step 2: Parse chunk
             size_t start = split_points[t];
             size_t end = split_points[t + 1];
             auto& td = tdata[t];
             td.stats.resize(num_countries);
-            td.name_items.reserve(36000);
+            td.name_items.reserve(200000);
 
             const char* p = mf.data + start;
             const char* limit = mf.data + end;
@@ -406,11 +437,9 @@ int main(int argc, char** argv) {
                 td.name_items.push_back(((uint64_t)cid << 56) | (name_hash & 0x00FFFFFFFFFFFFFFULL));
             }
 
-            // Sort and dedup local name items
             std::sort(td.name_items.begin(), td.name_items.end());
             td.name_items.erase(std::unique(td.name_items.begin(), td.name_items.end()), td.name_items.end());
 
-            // Build index for quick lookup by cid
             std::memset(td.cid_start_offset, 0, sizeof(td.cid_start_offset));
             uint32_t n_items = (uint32_t)td.name_items.size();
             uint32_t cur_cid = 0;
@@ -425,10 +454,9 @@ int main(int argc, char** argv) {
             sync_point.arrive_and_wait();
 
             if (t == 0) {
-                mf.close(); // Immediately release records.csv
+                mf.close();
             }
 
-            // Step 3: Phase 2 parallel reduction across countries
             size_t c_chunk = (num_countries + num_threads - 1) / num_threads;
             size_t c_start = t * c_chunk;
             size_t c_end = std::min(num_countries, c_start + c_chunk);
@@ -521,6 +549,5 @@ int main(int argc, char** argv) {
         }
     }
     fclose(fp);
-
     return 0;
 }

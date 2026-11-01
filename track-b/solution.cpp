@@ -638,7 +638,7 @@ int main(int argc, char** argv) {
     thread_start.shrink_to_fit();
 
 #ifndef _WIN32
-    madvise((void*)mf.data, mf.size, MADV_DONTNEED);
+    malloc_trim(0);
 #endif
 
     auto get_postings = [&](int term_id) -> std::pair<const uint32_t*, size_t> {
