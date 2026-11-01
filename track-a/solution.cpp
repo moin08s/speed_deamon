@@ -1,11 +1,13 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
 #include <cstdio>
+
 #ifdef _WIN32
 #include <windows.h>
 #include <intrin.h>
@@ -113,7 +115,7 @@ struct RawRecord { uint32_t lat; uint16_t eid_and_err; uint16_t _pad; };
 
 struct ThreadParseData {
     FastStringMap ep_map;
-    std::vector<std::string> endpoints;
+    std::vector<std::string_view> endpoints;
     std::vector<RawRecord> hour_records[72];
     std::vector<int> remap_eid;
 };
@@ -229,7 +231,7 @@ int main(int argc, char** argv) {
     }
     for (auto& th : threads) th.join();
 
-    std::vector<std::string> global_endpoints;
+    std::vector<std::string_view> global_endpoints;
     for (size_t i = 0; i < num_threads; ++i) {
         for (const auto& ep : parse_data[i].endpoints) global_endpoints.push_back(ep);
     }
@@ -237,13 +239,17 @@ int main(int argc, char** argv) {
     global_endpoints.erase(std::unique(global_endpoints.begin(), global_endpoints.end()), global_endpoints.end());
 
     size_t num_eps = global_endpoints.size();
+    threads.clear();
     for (size_t i = 0; i < num_threads; ++i) {
-        auto& ptd = parse_data[i];
-        ptd.remap_eid.resize(ptd.endpoints.size());
-        for (size_t le = 0; le < ptd.endpoints.size(); ++le) {
-            ptd.remap_eid[le] = (int)(std::lower_bound(global_endpoints.begin(), global_endpoints.end(), ptd.endpoints[le]) - global_endpoints.begin());
-        }
+        threads.emplace_back([&, i]() {
+            auto& ptd = parse_data[i];
+            ptd.remap_eid.resize(ptd.endpoints.size());
+            for (size_t le = 0; le < ptd.endpoints.size(); ++le) {
+                ptd.remap_eid[le] = (int)(std::lower_bound(global_endpoints.begin(), global_endpoints.end(), ptd.endpoints[le]) - global_endpoints.begin());
+            }
+        });
     }
+    for (auto& th : threads) th.join();
 
     std::vector<std::string> thread_outputs(num_threads);
     threads.clear();
@@ -322,7 +328,7 @@ int main(int argc, char** argv) {
 
                     uint32_t err = ep_errors[gid];
                     uint64_t ppm = (uint64_t)err * 1000000ULL / n;
-                    const std::string& ep_str = global_endpoints[gid];
+                    std::string_view ep_str = global_endpoints[gid];
 
                     char* p = line_buf;
                     std::memcpy(p, hr_str, 20); p += 20; *p++ = ' ';
