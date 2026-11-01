@@ -51,3 +51,4 @@ Every step from the reference to your final version, each with the live-board ru
 | 44 | Direct pread streaming scatter test | run-3a4ab9e4fc3c | 0.9245 | 399.6 | 43.15 |
 | 45 | MAP_SHARED host page cache streaming scatter | run-db07fac521a8 | 0.6866 | 150.5 | 51.25 |
 | 46 | Streaming direct scatter with 1MB buffered postings | run-758f84922e04 | 0.6160 | 144.1 | 52.40 |
+| 47 | Removed legacy Python scripts reducing S lines to 896 | run-e6827ff66dbc | 0.6363 | 143.6 | 52.88 |
