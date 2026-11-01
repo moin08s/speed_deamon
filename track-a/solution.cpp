@@ -197,6 +197,7 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
     uint32_t cur_hid = 0;
     char last_h0 = 0, last_h1 = 0, last_d0 = 0, last_m0 = 0;
     auto* cur_hour_vec = &td.hour_records[0];
+    const char* last_madv_page = p;
 
     while (p < limit) {
         if (*p == '\r' || *p == '\n') { p++; continue; }
@@ -281,13 +282,26 @@ void parse_chunk(const char* buf, size_t start, size_t end, ThreadParseData& td)
         if (*lat_ptr == '\r') lat_ptr++;
         if (*lat_ptr == '\n') lat_ptr++;
         p = lat_ptr;
+
+#ifndef _WIN32
+        if (p - last_madv_page >= 262144) {
+            uintptr_t page_start = (uintptr_t)last_madv_page & ~4095ULL;
+            uintptr_t page_end = (uintptr_t)p & ~4095ULL;
+            if (page_end > page_start) {
+                madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+            }
+            last_madv_page = p;
+        }
+#endif
     }
 
 #ifndef _WIN32
     if (end > start) {
-        uintptr_t page_start = (uintptr_t)(buf + start) & ~4095ULL;
+        uintptr_t page_start = (uintptr_t)last_madv_page & ~4095ULL;
         uintptr_t page_end = ((uintptr_t)(buf + end) + 4095ULL) & ~4095ULL;
-        madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+        if (page_end > page_start) {
+            madvise((void*)page_start, page_end - page_start, MADV_DONTNEED);
+        }
     }
 #endif
 }
