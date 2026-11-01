@@ -143,13 +143,19 @@ inline char* fast_u32(char* p, uint32_t val) {
     return p;
 }
 
-void parse_lines(const char* buf, size_t len, ThreadParseData& td, uint32_t& last_tag, uint32_t& cur_hid) {
+struct EpCacheItem {
+    uint64_t hash;
+    uint32_t len;
+    int id;
+};
+
+void parse_lines(const char* buf, size_t len, ThreadParseData& td, uint64_t& last_tag, uint32_t& cur_hid, EpCacheItem* local_cache) {
     const char* p = buf, *limit = buf + len;
     while (p < limit) {
         if (*p == '\r' || *p == '\n') { p++; continue; }
         if (limit - p < 35) break;
 
-        uint32_t tag = *(const uint32_t*)(p + 9);
+        uint64_t tag = *(const uint64_t*)(p + 8);
         if (__builtin_expect(tag != last_tag, 0)) {
             cur_hid = get_hour_idx(p);
             last_tag = tag;
@@ -188,7 +194,14 @@ void parse_lines(const char* buf, size_t len, ThreadParseData& td, uint32_t& las
         while (rem >= 8) { uint64_t v; std::memcpy(&v, ptr, 8); h = _mm_crc32_u64(h, v); ptr += 8; rem -= 8; }
         while (rem--) h = _mm_crc32_u8((uint32_t)h, (uint8_t)*ptr++);
 
-        int eid = GLOBAL_EP_MAP.get_or_insert(ep_start, ep_len, h);
+        size_t c_idx = (size_t)h & 2047;
+        int eid;
+        if (__builtin_expect(local_cache[c_idx].hash == h && local_cache[c_idx].len == (uint32_t)ep_len, 1)) {
+            eid = local_cache[c_idx].id;
+        } else {
+            eid = GLOBAL_EP_MAP.get_or_insert(ep_start, ep_len, h);
+            local_cache[c_idx] = {h, (uint32_t)ep_len, eid};
+        }
 
         const char* status_ptr = ep_end + 1;
         uint16_t is_err = (status_ptr < limit && *status_ptr == '5') ? 0x8000 : 0;
@@ -210,7 +223,8 @@ void stream_worker(const std::string& in_path, size_t start, size_t end, ThreadP
     size_t est_per_hour = (chunk_bytes / 50) / 72 + 64;
     for (size_t h = 0; h < 72; ++h) td.hour_records[h].reserve(est_per_hour);
 
-    uint32_t last_tag = 0, cur_hid = 0;
+    uint64_t last_tag = 0; uint32_t cur_hid = 0;
+    EpCacheItem local_cache[2048] = {};
 
 #ifdef _WIN32
     HANDLE hFile = CreateFileA(in_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -255,7 +269,7 @@ void stream_worker(const std::string& in_path, size_t start, size_t end, ThreadP
             else break; // No newline found in chunk
         }
 
-        parse_lines(io_buf.data(), parseable_len, td, last_tag, cur_hid);
+        parse_lines(io_buf.data(), parseable_len, td, last_tag, cur_hid, local_cache);
 
         leftover_len = total_buf_len - parseable_len;
         if (leftover_len > 0) {
@@ -274,7 +288,7 @@ int main(int argc, char** argv) {
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
 #ifndef _WIN32
-    mallopt(M_ARENA_MAX, 2);
+    mallopt(M_ARENA_MAX, 1);
 #endif
 
     std::string data_dir = (argc > 1) ? argv[1] : "/data";
@@ -303,7 +317,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const size_t num_threads = 12;
+    const size_t num_threads = 8;
     std::vector<size_t> splits(num_threads + 1, 0);
     splits[num_threads] = file_size;
 
@@ -459,5 +473,8 @@ int main(int argc, char** argv) {
         if (!hour_outputs[h].empty()) fwrite(hour_outputs[h].data(), 1, hour_outputs[h].size(), fp);
     }
     fclose(fp);
+#ifndef _WIN32
+    _exit(0);
+#endif
     return 0;
 }

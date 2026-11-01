@@ -59,4 +59,5 @@ Every step from the reference to your final version, each with the live-board ru
 | 52 | Early input file unmap prior to Phase 2 + contiguous endpoint pool | run-16a764b7f31d | 0.0601 | 37.7 | 68.71 |
 | 53 | Radix-100 table + work-stealing hour aggregation | run-8271d54302a8 | 0.0594 | 37.4 | 68.74 |
 | 54 | Lock-free shared AtomicEndpointMap + old_to_new direct indexing (New PB 70.53 pts) | run-88f5c80c9971 | 0.0483 | 41.5 | 70.53 |
-| 55 | Streaming pread zero-mmap memory reduction | pending | - | - | - |
+| 55 | Streaming pread zero-mmap memory reduction | run-0f4fcd644496 | 0.0477 | 38.2 | 70.80 |
+| 56 | 2048-slot direct thread-local cache + 64-bit timestamp tag + 8-thread core matching + M_ARENA_MAX=1 | pending | - | - | - |
